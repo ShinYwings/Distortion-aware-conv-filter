@@ -69,9 +69,8 @@ def distortion(src):
 
     v = np.matrix([0,1,0])
 
-    r_grid = np.array([[-1,-1],[0,-1],[1,-1],[-1,0],[0,0],[1,0],[-1,1],[0,1],[1,1]])
     # r_grid = np.array([[-1,-1],[-1,0],[-1,1],[0,-1],[0,0],[0,1],[1,-1],[1,0],[1,1]])
-    
+    r_grid = np.array([[-1,-1],[0,-1],[1,-1],[-1,0],[0,0],[1,0],[-1,1],[0,1],[1,1]])
     
     x = int(w/2)
 
@@ -81,8 +80,8 @@ def distortion(src):
     for y in range(h):
 
         # radian
-        theta = (x- w*0.5) * unit_w
-        phi   = (h*0.5 - y) * unit_h
+        theta = (x - w/2) * unit_w
+        phi   = (h/2 - y) * unit_h
 
         x_u = np.math.cos(phi)*np.math.sin(theta)
         y_u = np.math.sin(phi)
@@ -90,10 +89,10 @@ def distortion(src):
 
         p_u = np.array([x_u, y_u, z_u])
 
-        t_x = np.abs(np.cross(v, p_u))
-        t_y = np.abs(np.cross(p_u,t_x))
-        # t_x = np.cross(v, p_u)
-        # t_y = np.cross(p_u,t_x)
+        # t_x = np.abs(np.cross(v, p_u))
+        # t_y = np.abs(np.cross(p_u,t_x))
+        t_x = np.cross(v, p_u)
+        t_y = np.cross(p_u,t_x)
         
         r_sphere = list()
         for r in r_grid:

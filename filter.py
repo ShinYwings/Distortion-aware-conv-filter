@@ -1,90 +1,53 @@
-############
-# AUTHOR: An Jiaoyang
-# DATE: 2018-10-11
-############
-"""Deformable Convolutional Layer
-"""
 import tensorflow as tf
-from tensorflow.keras.layers import Conv2D
+from tensorflow.keras.layers import Layer
 import numpy as np
 
-class DistortionConvLayer(Conv2D):
+class DistortionConvLayer(Layer):
     """Only support "channel last" data format"""
     def __init__(self,
                  filters,
                  kernel_size,
                  strides=(1, 1),
                  padding='same',
-                 data_format=None,
                  dilation_rate=(1, 1),
-                 num_deformable_group=None,
-                 activation=None,
-                 use_bias=True,
                  kernel_initializer='glorot_uniform',
                  bias_initializer='zeros',
-                 kernel_regularizer=None,
-                 bias_regularizer=None,
-                 activity_regularizer=None,
-                 kernel_constraint=None,
-                 bias_constraint=None,
                  **kwargs):
         """`kernel_size`, `strides` and `dilation_rate` must have the same value in both axis.
 
         :param num_deformable_group: split output channels into groups, offset shared in each group. If
         this parameter is None, then set  num_deformable_group=filters.
         """
-        super(DistortionConvLayer, self).__init__(
-            filters=filters,
-            kernel_size=kernel_size,
-            strides=strides,
-            padding=padding,
-            data_format=data_format,
-            dilation_rate=dilation_rate,
-            activation=activation,
-            use_bias=use_bias,
-            kernel_initializer=kernel_initializer,
-            bias_initializer=bias_initializer,
-            kernel_regularizer=kernel_regularizer,
-            bias_regularizer=bias_regularizer,
-            activity_regularizer=activity_regularizer,
-            kernel_constraint=kernel_constraint,
-            bias_constraint=bias_constraint,
-            **kwargs)
+        super(DistortionConvLayer, self).__init__()
         self.kernel = None
         self.bias = None
-        self.offset_layer_kernel = None
-        self.offset_layer_bias = None
-        if num_deformable_group is None:
-            num_deformable_group = filters
-        if filters % num_deformable_group != 0:
-            raise ValueError('"filters" mod "num_deformable_group" must be zero')
-        self.num_deformable_group = num_deformable_group
+        self.filters = filters
+        self.kernel_size=kernel_size
+        self.strides=strides
+        self.padding=padding
+        self.kernel_initializer = kernel_initializer
+        self.bias_initializer = bias_initializer
+        self.dilation_rate = dilation_rate
 
     def build(self, input_shape):
-        b, h, w, c = input_shape
-        input_dim = input_shape[-1]
-        kernel_shape = self.kernel_size + (input_dim, self.filters)
-        # we want to use depth-wise conv
-        # kernel_shape = self.kernel_size + (self.filters * input_dim, 1)
-    
+        _, h, w, input_dim = input_shape
+        k_h, k_w = self.kernel_size
+        kernel_shape = [int(k_h*k_w*input_dim), self.filters]
+        
         self.kernel = self.add_weight(
             name='kernel',
             shape=kernel_shape,
             initializer=self.kernel_initializer,
-            regularizer=self.kernel_regularizer,
-            constraint=self.kernel_constraint,
             trainable=True,
             dtype=self.dtype)
-        if self.use_bias:
-            self.bias = self.add_weight(
-                name='bias',
-                shape=(self.filters,),
-                initializer=self.bias_initializer,
-                regularizer=self.bias_regularizer,
-                constraint=self.bias_constraint,
-                trainable=True,
-                dtype=self.dtype)
-
+       
+        self.bias = self.add_weight(
+            name='bias',
+            shape=(self.filters,),
+            initializer=self.bias_initializer,
+            trainable=True,
+            dtype=self.dtype)
+        
         self.offset = DistortionConvLayer.distortion(h, w, dilation_rate=self.dilation_rate[0], skydome=True)
 
         super(DistortionConvLayer, self).build(input_shape=input_shape)
@@ -130,10 +93,10 @@ class DistortionConvLayer(Conv2D):
         x= tf.where( x > in_w - 1 , tf.subtract(x, in_w), x)
 
         
-        y, x = [tf.expand_dims(i, axis=-1) for i in [y, x]]
-        y, x = [tf.tile(i, [batch_size, 1, 1, self.num_deformable_group, 1]) for i in [y, x]] # a pixel in the output feature map has several same offsets 
+        # y, x = [tf.expand_dims(i, axis=-1) for i in [y, x]]
+        y, x = [tf.tile(i, [batch_size, 1, 1, 1]) for i in [y, x]] # a pixel in the output feature map has several same offsets 
         
-        y, x = [tf.reshape(i, [*i.shape[0: 3], -1]) for i in [y, x]]
+        # y, x = [tf.reshape(i, [*i.shape[0: 3], -1]) for i in [y, x]]
 
         # get four coordinates of points around (x, y)
         y0, x0 = [tf.cast(tf.floor(i), dtype=tf.int32) for i in [y, x]]
@@ -173,12 +136,15 @@ class DistortionConvLayer(Conv2D):
 
 
         # reshape the "big" feature map
+        pixels = tf.reshape(pixels, [batch_size, out_h* out_w, filter_h* filter_w* channel_in])
 
         # 1, 32, 128, 9, 2 ( b, h, w, grid # * out_channels, in_channels
         #                     =>   b, h, w, 3, 3, out_channels, in_channels)
-        pixels = tf.reshape(pixels, [batch_size, out_h, out_w, filter_h, filter_w, self.num_deformable_group, channel_in])
-        pixels = tf.transpose(pixels, [0, 1, 3, 2, 4, 5, 6])
-        pixels = tf.reshape(pixels, [batch_size, out_h * filter_h, out_w * filter_w, self.num_deformable_group*channel_in])
+        # pixels = tf.reshape(pixels, [batch_size, out_h, out_w, filter_h, filter_w, self.num_deformable_group, channel_in])
+        # pixels = tf.transpose(pixels, [0, 1, 3, 2, 4, 5, 6])
+        # pixels = tf.reshape(pixels, [batch_size, out_h * filter_h, out_w * filter_w, self.num_deformable_group*channel_in])
+        
+        
         # current shape at this line : [b, 3h, 3w, out_channels, in_channels]
         
         # copy channels to same group
@@ -193,16 +159,17 @@ class DistortionConvLayer(Conv2D):
 
         # current pixels shape at this line : [b, 3h, 3w, out_channels, in_channels]
         # self.kernel = [h, w, out_channels, in_channels]
-        out = tf.nn.conv2d(pixels, self.kernel, strides=[1, filter_h, filter_w, 1], padding='VALID')
+        out = tf.matmul(pixels, self.kernel)
         
         # add the output feature maps in the same group
         # out = tf.reshape(out, [batch_size, out_h, out_w, self.filters, channel_in])
         # out = tf.reduce_sum(out, axis=-1)
         
-        if self.use_bias:
-            out = tf.nn.bias_add(out, self.bias)
+        out = tf.nn.bias_add(out, self.bias)
+
+        out = tf.reshape(out, [batch_size, out_h, out_w, self.filters])
         
-        return self.activation(out)
+        return tf.nn.relu(out)
 
     def _pad_input(self, inputs):
         """Check if input feature map needs padding, because we don't use the standard Conv() function.

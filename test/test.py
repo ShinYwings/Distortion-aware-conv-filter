@@ -77,8 +77,12 @@ def distortion(h,w, dilation_rate=1, skydome=True):
 
     v = np.matrix([0,1,0])
 
-    r_grid = np.array([[-1,-1],[-1,0],[-1,1],[0,-1],[0,0],[0,1],[1,-1],[1,0],[1,1]])
+    # r_grid = np.array([[-1,-1],[-1,0],[-1,1],[0,-1],[0,0],[0,1],[1,-1],[1,0],[1,1]])
     
+    # r_grid = np.array([[1,-1],[1,0],[1,1],[0,-1],[0,0],[0,1],[-1,-1],[-1,0],[-1,1]])
+    r_grid = np.array([[1,1],[0,-1],[-1,1],
+                        [1,0],[0,0],[-1,0],
+                        [1,-1],[0,1],[-1,-1]])
     x = int(w*0.5)
 
     kernel = []
@@ -203,8 +207,11 @@ def test(img):
 
     offset = distortion(_h,_w,1,True)
 
+    tf.print(np.shape(img))
+
     input = _pad_input(tf.convert_to_tensor([img]))
 
+    
     filters = 96
     num_deformable_group = 1
 
@@ -222,18 +229,26 @@ def test(img):
     offset = tf.stack([offset] * _w)
     offset = tf.transpose(offset, [1, 0, 2, 3])
     offset = tf.expand_dims(offset, 0)
-    
+
+    tf.print(offset[0,0,0], summarize=-1)
+    tf.print(offset.get_shape())
+
     x_off, y_off = offset[:, :, :, :, 0], offset[:, :, :, :, 1]
     
     # input feature map gird coordinates
     y, x = _get_conv_indices([h, w], 3)
+    tf.print(x_off[0,1,1], y_off[0,1,1], summarize=-1)
+    tf.print("XX", x_off.get_shape())
+    tf.print(x[0,1,1], y[0,1,1], summarize=-1)
+    tf.print("XX", x.get_shape())
     # y, x = [tf.expand_dims(i, axis=-1) for i in [y, x]]
     # y, x = [tf.tile(i, [b, 1, 1, 1, 1]) for i in [y, x]]
     # y, x = [tf.reshape(i, [*i.shape[0: 3], -1]) for i in [y, x]]
     y, x = [tf.cast(i, dtype=tf.float64) for i in [y, x]]
 
     # Add offset
-    y, x = y + y_off, x + x_off
+    y = tf.add_n([y, y_off])
+    x = tf.add_n([x, x_off])
 
     y = tf.clip_by_value(y, 0, h - 1)
     
@@ -241,11 +256,11 @@ def test(img):
     x= tf.where( x < 0 , tf.add(x, w), x)
     x= tf.where( x > w - 1 , tf.subtract(x, w), x)
     
-    y, x = [tf.expand_dims(i, axis=-1) for i in [y, x]]
-    y, x = [tf.tile(i, [b, 1, 1, filters, 1]) for i in [y, x]] # a pixel in the output feature map has several same offsets 
-    y, x = [tf.reshape(i, [*i.shape[0: 3], -1]) for i in [y, x]]
+    # y, x = [tf.expand_dims(i, axis=-1) for i in [y, x]]
+    # y, x = [tf.tile(i, [b, 1, 1, filters, 1]) for i in [y, x]] # a pixel in the output feature map has several same offsets 
+    # y, x = [tf.reshape(i, [*i.shape[0: 3], -1]) for i in [y, x]]
+    # tf.print("y,x: ", y.get_shape(), "\n", x.get_shape())
 
-    tf.print("y,x: ", y.get_shape(), "\n", x.get_shape())
     # get four coordinates of points around (x, y)
     y0, x0 = [tf.cast(tf.floor(i), dtype=tf.int32) for i in [y, x]]
     y1, x1 = y0 + 1, x0 + 1
@@ -262,27 +277,29 @@ def test(img):
     x0, x1, y0, y1 = [tf.cast(i, dtype=tf.float64) for i in [x0, x1, y0, y1]]
 
     # weights
-    w0 = (y1 - y) * (x1 - x)
-    w1 = (y1 - y) * (x - x0)
-    w2 = (y - y0) * (x1 - x)
-    w3 = (y - y0) * (x - x0)
+    w0 = tf.multiply(tf.subtract(y1, y), tf.subtract(x1, x))
+    w1 = tf.multiply(tf.subtract(y1, y), tf.subtract(x, x0))
+    w2 = tf.multiply(tf.subtract(y, y0), tf.subtract(x1, x))
+    w3 = tf.multiply(tf.subtract(y, y0), tf.subtract(x, x0))
 
     # expand dim for broadcast
     w0, w1, w2, w3 = [tf.expand_dims(i, axis=-1) for i in [w0, w1, w2, w3]]
     
     # bilinear interpolation (verified by shin)
-    pixels = tf.add_n([w0 * p0, w1 * p1, w2 * p2, w3 * p3])
+    pixels = tf.add_n([tf.multiply(w0, p0), tf.multiply(w1, p1), 
+                        tf.multiply(w2, p2), tf.multiply(w3, p3)])
 
     tf.print("pixels : ", pixels.get_shape() , output_stream=sys.stdout)
 
     # reshape the "big" feature map
-    pixels = tf.reshape(pixels, [b, out_h, out_w, filter_h, filter_w, filters, c])
-    pixels = tf.transpose(pixels, [0, 1, 3, 2, 4, 5, 6])
-    pixels = tf.reshape(pixels, [b, out_h * filter_h, out_w * filter_w, filters, c])
+    pixels = tf.reshape(pixels, [b, out_h* out_w, filter_h* filter_w* c])
+    
+    # pixels = tf.transpose(pixels, [0, 1, 3, 2, 4, 5, 6])
+    # pixels = tf.reshape(pixels, [b, out_h * filter_h, out_w * filter_w, c])
 
     # copy channels to same group
-    pixels = tf.tile(pixels, [1, 1, 1, 1, filters])
-    pixels = tf.reshape(pixels, [b, out_h * filter_h, out_w * filter_w, -1])
+    # pixels = tf.tile(pixels, [1, 1, 1, 1, filters])
+    # pixels = tf.reshape(pixels, [b, out_h * filter_h, out_w * filter_w, -1])
 
     print("pixels shape : ", pixels.get_shape())
 

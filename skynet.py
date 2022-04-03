@@ -4,6 +4,8 @@ import ops
 
 import tensorflow_addons as tfa
 
+import filter as df
+
 class transportMatrix(tf.keras.layers.Layer):
     def __init__(self, output_square_size=64, channel=3):
         super(transportMatrix, self).__init__()
@@ -28,7 +30,8 @@ class resBlock(Model):
     def __init__(self, filter_in, filter_out, k_h=3, k_w=3, strides=1):
         super(resBlock, self).__init__()
 
-        self.conv1 = ops.conv2d(output_channels=filter_out, k_h=k_h, k_w=k_w, strides=strides)
+        # self.conv1 = ops.conv2d(output_channels=filter_out, k_h=k_h, k_w=k_w, strides=strides)
+        self.conv1 = df.DistortionConvLayer(filter_out, [k_h, k_w])  # out 24
         self.norm1 = tfa.layers.InstanceNormalization(axis=3,
                                    center=True, 
                                    scale=True,
@@ -36,7 +39,8 @@ class resBlock(Model):
                                    gamma_initializer="random_uniform")
         self.elu1 = ops.elu()
         
-        self.conv2 = ops.conv2d(output_channels=filter_out, k_h=k_h, k_w=k_w, strides=strides)
+        # self.conv2 = ops.conv2d(output_channels=filter_out, k_h=k_h, k_w=k_w, strides=strides)
+        self.conv2 = df.DistortionConvLayer(filter_out, [k_h, k_w])  # out 24
         self.norm2 = tfa.layers.InstanceNormalization(axis=3,
                                    center=True, 
                                    scale=True,
@@ -125,8 +129,46 @@ class model(Model):
 
         self.conv2 = ops.conv2d(output_channels=3, k_h=7, k_w=7, strides=1)
         self.tanh = ops.tanh()
+
+        # 64 =  sqrt(128 * 64) 
+        self.tm = transportMatrix(output_square_size=64, channel=3)
+    # def encode(self, x, training="training"):
+    #     conv1 = self.conv1(x)
+    #     norm1 = self.norm1(conv1)
+    #     actv1 = self.actv1(norm1)
+
+    #     res1 = self.res1(actv1, training)
+    #     mp1 = self.mp1(res1)
+        
+    #     res2 = self.res2(mp1, training)
+    #     mp2 = self.mp2(res2)
+        
+    #     flat = self.flat(mp2)
+    #     fc = self.fc(flat)
+
+    #     return fc
+
+    # def decode(self, fc, training="training"):
+    #     defc = self.defc(fc)
+
+    #     res3 = self.res3(defc, training)
+
+    #     us1 = self.us1(res3)
+    #     norm2 = self.norm2(us1)
+    #     actv2 = self.actv2(norm2)
+    #     res4 = self.res4(actv2, training)
+
+    #     us2 = self.us2(res4)
+    #     norm3 = self.norm3(us2)
+    #     actv3 = self.actv2(norm3)
+    #     res5 = self.res5(actv3, training)
+
+    #     conv2 = self.conv2(res5)
+    #     output = self.tanh(conv2)
+        
+    #     return output
     
-    def encode(self, x, training="training"):
+    def __call__(self, x, training="training"):
         conv1 = self.conv1(x)
         norm1 = self.norm1(conv1)
         actv1 = self.actv1(norm1)
@@ -140,9 +182,6 @@ class model(Model):
         flat = self.flat(mp2)
         fc = self.fc(flat)
 
-        return fc
-
-    def decode(self, fc, training="training"):
         defc = self.defc(fc)
 
         res3 = self.res3(defc, training)
@@ -161,7 +200,7 @@ class model(Model):
         output = self.tanh(conv2)
         
         return output
-    
+
     def render_scene(self, x, training="training"):
         
         # HERE,,,, log decompression...?

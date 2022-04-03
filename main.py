@@ -10,12 +10,29 @@ import skynet
 
 import utils
 from random_tone_map import random_tone_map
+import matplotlib.pyplot as plt
+
+def filter_show(filters, nx=8, margin=3, scale=10):
+    """
+    c.f. https://gist.github.com/aidiary/07d530d5e08011832b12#file-draw_weight-py
+    """
+    filters = np.transpose(filters, [0, 3, 1, 2])
+    FN, C, FH, FW = filters.shape
+    ny = int(np.ceil(FN / nx))
+
+    fig = plt.figure()
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=1, hspace=0.05, wspace=0.05)
+
+    for i in range(FN):
+        ax = fig.add_subplot(ny, nx, i+1, xticks=[], yticks=[])
+        ax.imshow(filters[i, 0], interpolation='nearest')
+    plt.show()
 
 AUTO = tf.data.AUTOTUNE
 
 # Hyper parameters
 LEARNING_RATE = 1e-3
-BATCH_SIZE = 256
+BATCH_SIZE = 32
 SKYNET_EPOCHS = 5000
 LDR2HDR_EPOCHS = 1000
 EARLY_STOPPPING = 0.0135

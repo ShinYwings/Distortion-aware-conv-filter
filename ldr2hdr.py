@@ -3,8 +3,6 @@ from tensorflow.keras import Model
 import tensorflow_addons as tfa
 import ops
 
-import filter as df
-
 class transportMatrix(tf.keras.layers.Layer):
     def __init__(self, output_square_size=64, channel=3):
         super(transportMatrix, self).__init__()

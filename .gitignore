@@ -127,3 +127,12 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+checkpoints/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+__pycache__
+*.so
+tensorboard/
+test/

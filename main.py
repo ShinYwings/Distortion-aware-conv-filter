@@ -1,198 +1,324 @@
-import matplotlib.pyplot as plt
+import os
 import numpy as np
 import tensorflow as tf
+import time
 
-from tensorflow import keras
-from tensorflow.keras import layers
+from tqdm import tqdm
 
-import tensorflow_datasets as tfds
+import ldr2hdr
+import skynet
 
-import distortion_filter as df
-import filter as f
+import utils
+from random_tone_map import random_tone_map
 
-import tensorflow as tf
-print("TensorFlow version:", tf.__version__)
+AUTO = tf.data.AUTOTUNE
 
-from tensorflow.keras.layers import Dense, Flatten, Conv2D
-from tensorflow.keras import Model
+# Hyper parameters
+LEARNING_RATE = 1e-3
+BATCH_SIZE = 256
+SKYNET_EPOCHS = 5000
+LDR2HDR_EPOCHS = 1000
+EARLY_STOPPPING = 0.0135
+FC_LAYER_DIM = 64
+IMSHAPE = (32,128,3)
+RENDERSHAPE = (64,64,3)
 
-import cv2
+TRAIN_SKYNET = False
+TRAIN_LDR2PSEUDOHDR = True
 
-def filter_show(filters, nx=8, margin=3, scale=10):
-    """
-    c.f. https://gist.github.com/aidiary/07d530d5e08011832b12#file-draw_weight-py
-    """
-    filters = np.transpose(filters, [0, 3, 1, 2])
-    FN, C, FH, FW = filters.shape
-    ny = int(np.ceil(FN / nx))
+# Tone Mapping Operators
+TMO = ['exposure', 'reinhard', 'mantiuk', 'drago']
 
-    fig = plt.figure()
-    fig.subplots_adjust(left=0, right=1, bottom=0, top=1, hspace=0.05, wspace=0.05)
+CURRENT_WORKINGDIR = os.getcwd()
+DATASET_DIR = os.path.join(CURRENT_WORKINGDIR, "/home/shin/shinywings/research/sky_ldr2hdr/DataGeneration/dataset/tfrecord")
 
-    for i in range(FN):
-        ax = fig.add_subplot(ny, nx, i+1, xticks=[], yticks=[])
-        ax.imshow(filters[i, 0], interpolation='nearest')
-    plt.show()
+SKYNET_PRETRAINED_DIR = None # None
+LDR2HDR_PRETRAINED_DIR = None # None
 
-# def filter_show(img, filters, nx=8, margin=3, scale=10):
-#     """
-#     c.f. https://gist.github.com/aidiary/07d530d5e08011832b12#file-draw_weight-py
-#     """
-#     filters = np.transpose(filters, [0, 3, 1, 2])
-#     FN, C, FH, FW = filters.shape
-#     ny = int(np.ceil(FN / nx))
+ENCODING_STYLE = "utf-8"
+HDR_EXTENSION = "hdr" # Available ext.: exr, hdr
 
-#     fig = plt.figure()
-#     fig.subplots_adjust(left=0, right=1, bottom=0, top=1, hspace=0.05, wspace=0.05)
+TRAIN_DIR = os.path.join(DATASET_DIR, "train")
+TEST_DIR = os.path.join(DATASET_DIR, "test")
 
-#     img = np.zeros_like(img[0])
-#     img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-#     print(np.shape(img))
-#     for i in range(FN):
+"""RGB to Lab"""
+# def toLAB(Y):
+#     t = Y # reference white : 1  / Don't panic with the Wikipedia Y_n = 100
+    
+#     for i in range(t.shape[0]):
+#         for j in range(t.shape[1]):
+#             t[i,j] = np.power(t[i,j], 1/3) if t[i,j] > 0.008856452 else t[i,j]/0.12841855 + 4/29
+    
+#     return 116*t-16
+# 1024 2048 -> 512 1024  
+# Create grid and multivariate normal
+
+# hdr = 0.2627*img[:,:,2] + 0.6780*img[:,:,1] + 0.0593*img[:,:,0]
+# hdr = toLAB(hdr)
+
+def _parse_function(example_proto):
+    # Parse the input `tf.train.Example` proto using the dictionary above.
+    feature_description = {
+        'image': tf.io.FixedLenFeature([], tf.string),
+        'render': tf.io.FixedLenFeature([], tf.string),
+        'azimuth' : tf.io.FixedLenFeature([], tf.float32),
+        'elevation' : tf.io.FixedLenFeature([], tf.float32),
+    }
+    example = tf.io.parse_single_example(example_proto, feature_description)
+
+    hdr = tf.io.decode_raw(example['image'], np.float32)
+    hdr = tf.reshape(hdr, IMSHAPE)
+
+    render_img = tf.io.decode_raw(example['render'], np.float32)
+    render_img = tf.reshape(render_img, RENDERSHAPE)
+
+    azimuth= example['azimuth']
+    elevation= example['elevation']
+   
+    return hdr, render_img, [azimuth, elevation]
+
+def configureDataset(dirpath, train= "train"):
+
+    tfrecords_list = list()
+    a = tf.data.Dataset.list_files(os.path.join(dirpath, "*.tfrecord"), shuffle=False)
+    tfrecords_list.extend(a)
+
+    ds = tf.data.TFRecordDataset(filenames=tfrecords_list, num_parallel_reads=AUTO, compression_type="GZIP")
+    ds = ds.map(_parse_function, num_parallel_calls=AUTO)
+
+    if train:
+        ds = ds.shuffle(buffer_size = 10000).batch(batch_size=BATCH_SIZE, drop_remainder=False).prefetch(AUTO)
+    else:
+        ds = ds.batch(batch_size=BATCH_SIZE, drop_remainder=False).prefetch(AUTO)
         
-#         ax = fig.add_subplot(ny, nx, i+1, xticks=[], yticks=[])
-#         h,w = np.shape(filters[i, 0])
-#         print(filters[i, 0])
-        
-#         for y in range(h):
-#             for x in range(w):
-                
-#                 # cv2.circle(img, filters[i, 0, y, x], 1, (0,0,255))
-#                 # cv2.imshow("img",img)
-#                 # cv2.waitKey(0)
-#                 plt.imshow(img, interpolation="nearest")
-#                 plt.show()
-    # plt.show()
+    return ds
+
+def hdr_logCompression(x, validDR = 5000.):
+
+    # disentangled way
+    x = tf.math.multiply(validDR, x)
+    numerator = tf.math.log(1.+ x)
+    denominator = tf.math.log(1.+validDR)
+    output = tf.math.divide(numerator, denominator) - 1.
+
+    return output
+
+def hdr_logDecompression(x, validDR = 5000.):
+
+    x = x + 1.
+    denominator = tf.math.log(1.+validDR)
+    x = tf.math.multiply(x, denominator)
+    x = tf.math.exp(x)
+    output = tf.math.divide(x, validDR)
+    
+    return output
+
+def _tone_mapping(hdrs):
+    ldrs = []
+    for hdr in hdrs:
+
+        choice = np.random.randint(0, len(TMO))
+
+        if TMO[choice] == "exposure":
+            pe = utils.PercentileExposure()
+            ldr = pe(hdr)
+        else:
+            try:
+                ldr = random_tone_map(hdr.numpy(), TMO[choice])
+            except:
+                ldr = np.zeros_like(hdr.numpy())
+
+        # Normalize to [-1..1]
+        ldr = ldr.astype(np.float32)
+        norm_ldr = tf.subtract(tf.divide(ldr,127.5),1.)
+        ldrs.append(norm_ldr)
+    
+    ldrs = tf.convert_to_tensor(ldrs, dtype=tf.float32)
+    return ldrs
+
+def createDirectories(path, name="name", dir="dir"):
+    
+    path = utils.createNewDir(path, dir)
+    root_logdir = utils.createNewDir(path, name)
+    logdir = utils.createNewDir(root_logdir)
+
+    if dir=="tensorboard":
+        train_logdir, test_logdir = utils.createTrainValidationDirpath(logdir, createDir=False)
+        train_summary_writer = tf.summary.create_file_writer(train_logdir)
+        test_summary_writer = tf.summary.create_file_writer(test_logdir)
+        return train_summary_writer, test_summary_writer, logdir
+
+    if dir=="outputImg":
+        train_logdir, test_logdir = utils.createTrainValidationDirpath(logdir, createDir=True)
+        return train_logdir, test_logdir
 
 if __name__=="__main__":
 
-    train_ds, test_ds = tfds.load('horses_or_humans', split=['train', 'test'], shuffle_files=False)
-
-    def normalization_layer(example):
-        
-        image = example["image"]
-        label = example["label"]
-        
-        image = tf.cast(image, dtype=tf.float32)
-        image = tf.divide(image, 255.)
-
-        return image, label
-
-    b_size = 16
-    train_ds = train_ds.map(normalization_layer, num_parallel_calls=tf.data.AUTOTUNE).shuffle(500).batch(b_size).prefetch(tf.data.AUTOTUNE)
-
-    test_ds = test_ds.map(normalization_layer, num_parallel_calls=tf.data.AUTOTUNE).batch(b_size).prefetch(tf.data.AUTOTUNE)
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
     
-    class MyModel(Model):
-        def __init__(self):
-            super(MyModel, self).__init__()
-            # self.conv1 = Conv2D(16, 3, activation='relu')
-            self.conv1 = f.DistortionConvLayer(16, [3, 3])  # out 24
-            self.pool1 = layers.MaxPool2D()
-            self.conv2 = Conv2D(32, 3, activation='relu')
-            self.pool2 = layers.MaxPool2D()
-            self.conv3 = Conv2D(32, 3, activation='relu')
-            self.pool3 = layers.MaxPool2D()
-            self.conv4 = Conv2D(32, 3, activation='relu')
-            self.flatten = Flatten()
-            self.d1 = Dense(128, activation='relu')
-            self.d2 = Dense(10)
-
-        def call(self, x):
-            conv1 = self.conv1(x)
-            x = self.pool1(conv1)
-            x = self.conv2(x)
-            x = self.pool2(x)
-            x = self.conv3(x)
-            x = self.pool3(x)
-            x = self.conv4(x)
-            x = self.flatten(x)
-            x = self.d1(x)
-            return self.d2(x), conv1
-
-    # Create an instance of the model
-    model = MyModel()
-
-    loss_object = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-
-    optimizer = tf.keras.optimizers.Adam()
+    """Path for tf.summary.FileWriter and to store model checkpoints"""
+    root_dir=os.getcwd()
     
-    train_loss = tf.keras.metrics.Mean(name='train_loss')
-    train_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='train_accuracy')
+    train_summary_writer_ldr2hdr, test_summary_writer_ldr2hdr, logdir_ldr2hdr = createDirectories(root_dir, name="ldr2hdr", dir="tensorboard")
 
-    test_loss = tf.keras.metrics.Mean(name='test_loss')
-    test_accuracy = tf.keras.metrics.SparseCategoricalAccuracy(name='test_accuracy')
+    print('tensorboard --logdir={}'.format(logdir_ldr2hdr))
 
-    @tf.function
-    def train_step(images, labels):
-        with tf.GradientTape() as tape:
-            # training=True is only needed if there are layers with different
-            # behavior during training versus inference (e.g. Dropout).
-            predictions, conv1 = model(images, training=True)
-            loss = loss_object(labels, predictions)
-        gradients = tape.gradient(loss, model.trainable_variables)
-        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+    """"Create Output Image Directory"""
+    if(TRAIN_LDR2PSEUDOHDR):
+        train_outImgDir_ldr2hdr, test_outImgDir_ldr2hdr = createDirectories(root_dir, name="ldr2hdr", dir="outputImg")
 
-        train_loss(loss)
-        train_accuracy(labels, predictions)
+    """Init Dataset"""
+    ldr2hdr_train_ds = configureDataset(TRAIN_DIR, train=True)
+    ldr2hdr_test_ds  = configureDataset(TEST_DIR, train=False)
 
-        return conv1
+    """
+    Model initialization
+    """
+    # ldr2hdr
+    optimizer_ldr2hdr = tf.keras.optimizers.Adam(LEARNING_RATE) # TODO change SGD
+    train_loss_ldr2hdr = tf.keras.metrics.Mean(name= 'train_loss_ldr2hdr', dtype=tf.float32)
+    test_loss_ldr2hdr = tf.keras.metrics.Mean(name='test_loss_ldr2hdr', dtype=tf.float32)
 
-    @tf.function
-    def test_step(images, labels):
-        # training=False is only needed if there are layers with different
-        # behavior during training versus inference (e.g. Dropout).
-        predictions, conv1 = model(images, training=False)
-        t_loss = loss_object(labels, predictions)
-
-        test_loss(t_loss)
-        test_accuracy(labels, predictions)
-        
-        return conv1
-
-    EPOCHS = 5
-
-    for epoch in range(EPOCHS):
-        # Reset the metrics at the start of the next epoch
-        train_loss.reset_states()
-        train_accuracy.reset_states()
-        test_loss.reset_states()
-        test_accuracy.reset_states()
-
-        for image, label in train_ds:
-            _ = train_step(image, label)
-            
-        for image, label in test_ds:
-            conv1 = test_step(image, label)
-        
-        filter_show(conv1.numpy())
-        print(
-            f'Epoch {epoch + 1}, '
-            f'Loss: {train_loss.result()}, '
-            f'Accuracy: {train_accuracy.result() * 100}, '
-            f'Test Loss: {test_loss.result()}, '
-            f'Test Accuracy: {test_accuracy.result() * 100}'
-        )
-    ####################################
-
-    # acc = train_accuracy.result()
-    # val_acc = test_accuracy.result()
-
-    # loss= train_loss.result()
-    # val_loss=test_loss.result()
-
-    # epochs_range = range(EPOCHS)
-
-    # plt.figure(figsize=(8, 8))
-    # plt.subplot(1, 2, 1)
-    # plt.plot(epochs_range, acc, label='Training Accuracy')
-    # plt.plot(epochs_range, val_acc, label='Validation Accuracy')
-    # plt.legend(loc='lower right')
-    # plt.title('Training and Validation Accuracy')
-
-    # plt.subplot(1, 2, 2)
-    # plt.plot(epochs_range, loss, label='Training Loss')
-    # plt.plot(epochs_range, val_loss, label='Validation Loss')
-    # plt.legend(loc='upper right')
-    # plt.title('Training and Validation Loss')
+    _skynet  = skynet.model(fc_dim=FC_LAYER_DIM)
+    # _ldr2hdr = ldr2hdr.model(fc_dim=FC_LAYER_DIM, imshape=IMSHAPE[:2], deconv_method='resize')
+    
+    """
+    Check out the dataset that properly work
+    """
+    # import matplotlib.pyplot as plt
+    # plt.figure(figsize=(20,20))
+    # for i, (image, means) in enumerate(train_ds.take(25)):
+    #     ax = plt.subplot(5,5,i+1)
+    #     plt.imshow(image[i])
+    #     plt.axis('off')
     # plt.show()
+
+    """
+    CheckPoint Create
+    """
+    checkpoint_path = utils.createNewDir(root_dir, "checkpoints")
+    
+    # ldr2hdr
+    if LDR2HDR_PRETRAINED_DIR is None:
+        checkpoint_path_ldr2hdr = utils.createNewDir(checkpoint_path, "ldr2hdr")
+    else: checkpoint_path_ldr2hdr = LDR2HDR_PRETRAINED_DIR
+    
+    ckpt_ldr2hdr = tf.train.Checkpoint(
+                            epoch = tf.Variable(0),
+                            ldr2hdr=_skynet,
+                           optimizer=optimizer_ldr2hdr,) # TODO Insert Iterator object
+
+    ckpt_manager_ldr2hdr = tf.train.CheckpointManager(ckpt_ldr2hdr, checkpoint_path_ldr2hdr, max_to_keep=5)
+
+    #  if a checkpoint exists, restore the latest checkpoint.
+    if ckpt_manager_ldr2hdr.latest_checkpoint and not TRAIN_LDR2PSEUDOHDR:
+        ckpt_ldr2hdr.restore(ckpt_manager_ldr2hdr.latest_checkpoint)
+        print('Latest ldr2hdr checkpoint has restored!!')
+
+    with tf.device('/GPU:0'):
+
+        """
+        ldr to pseudo-hdr
+        """
+        @tf.function
+        def train_step(src_hdrs, ldrs, rndrs, poses):
+            
+            # hdrs = hdr_logCompression(src_hdrs) # to [-1..1]
+
+            with tf.GradientTape() as tape_ldr2hdr:
+                
+                outImg = _skynet(ldrs, training=True)
+                
+                pred_hdrs = hdr_logDecompression(outImg)
+                outRndr = _skynet.render_scene(pred_hdrs, training=True)
+                
+                l1_loss = tf.reduce_mean(tf.abs(src_hdrs - pred_hdrs))
+                rndr_loss = tf.reduce_mean(tf.square(rndrs - outRndr))
+                combine_loss = l1_loss + rndr_loss
+            
+            gradients_ldr2hdr = tape_ldr2hdr.gradient(combine_loss, _skynet.trainable_variables)
+            optimizer_ldr2hdr.apply_gradients(zip(gradients_ldr2hdr, _skynet.trainable_variables))
+            train_loss_ldr2hdr(combine_loss)
+
+        @tf.function
+        def test_step(test_src_hdrs, test_ldrs, rndrs, poses):
+            
+            # test_hdrs = hdr_logCompression(test_src_hdrs) # to [-1..1]
+
+            outImg_test = _skynet(test_ldrs, training= False)
+            
+            pred_test_hdrs = hdr_logDecompression(outImg_test)
+            outRndr_test = _skynet.render_scene(pred_test_hdrs, training=False)
+
+            l1_loss = tf.reduce_mean(tf.abs(test_src_hdrs - pred_test_hdrs))
+            rndr_loss = tf.reduce_mean(tf.square(rndrs - outRndr_test))
+                       
+            combine_loss = l1_loss + rndr_loss
+
+            test_loss_ldr2hdr(combine_loss)
+
+            return outImg_test
+    
+    print("시작")
+    
+    """
+    Sub module 2. train ldr2hdr (get pseudo-hdr)
+    &
+    Sub module 3. train pseudo-HDR encoder (get sky parameters) then compare the output to the ground-truth sky parameters, and generate real HDR with skynet decoder
+    """
+    
+    if(TRAIN_LDR2PSEUDOHDR):
+        isFirst = True
+
+        for epoch in range(LDR2HDR_EPOCHS):
+
+            start = time.perf_counter()
+
+            train_loss_ldr2hdr.reset_states()
+            test_loss_ldr2hdr.reset_states()
+            
+            for step, (hdrs, rndrs, poses) in enumerate(tqdm(ldr2hdr_train_ds)):
+                
+                ldrs = tf.py_function(_tone_mapping, [hdrs], [tf.float32])[0]
+                
+                train_step(hdrs, ldrs, rndrs, poses)
+
+            with train_summary_writer_ldr2hdr.as_default():
+                tf.summary.scalar('loss', train_loss_ldr2hdr.result(), step=epoch+1)
+            
+            for step, (hdrs, rndrs, poses) in enumerate(tqdm(ldr2hdr_test_ds)):
+                
+                ldrs = tf.py_function(_tone_mapping, [hdrs], [tf.float32])[0]
+                
+                pseudoHDR = test_step(hdrs, ldrs, rndrs, poses)
+
+            with test_summary_writer_ldr2hdr.as_default():
+                tf.summary.scalar('loss', test_loss_ldr2hdr.result(), step=epoch+1)
+            
+            if isFirst:
+                isFirst = False
+                groundtruth_dir = utils.createNewDir(test_outImgDir_ldr2hdr, "groundTruth")
+                if not os.listdir(groundtruth_dir):
+                    for i in range(hdrs.get_shape()[0]):
+                        utils.writeHDR(hdrs[i].numpy(), "{}/{}_gt.{}".format(groundtruth_dir,i,HDR_EXTENSION), hdrs.get_shape()[1:3])
+
+            if (epoch+1) % 10 == 0:
+                pseudoHDR = hdr_logDecompression(pseudoHDR)
+                for i in range(pseudoHDR.get_shape()[0]):
+                    pseudoHDR_epoch_dir = utils.createNewDir(test_outImgDir_ldr2hdr, "{}Epoch_pseudoHDR".format(epoch+1))
+                    utils.writeHDR(pseudoHDR[i].numpy(), "{}/{}.{}".format(pseudoHDR_epoch_dir,i,HDR_EXTENSION), pseudoHDR.get_shape()[1:3])
+
+            ckpt_ldr2hdr.epoch.assign_add(1)
+
+            if int(ckpt_ldr2hdr.epoch) % 5 == 0:
+                save_path =  ckpt_manager_ldr2hdr.save()
+                print("Saved checkpoint for step {}: {}".format(int(ckpt_ldr2hdr.epoch), save_path))
+            
+            print('Epoch: {}, Loss: {}, Test Loss: {}'.format(epoch+1, train_loss_ldr2hdr.result(), test_loss_ldr2hdr.result()))
+            
+            print("Spends time : {} seconds in Epoch number {}".format(time.perf_counter() - start,epoch+1))
+    
+    print("끝")

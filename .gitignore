@@ -136,3 +136,4 @@ __pycache__
 *.so
 tensorboard/
 test/
+outputImg/

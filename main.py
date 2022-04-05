@@ -7,6 +7,7 @@ from tqdm import tqdm
 
 import ldr2hdr
 import skynet
+import grad_cam as gc
 
 import utils
 from random_tone_map import random_tone_map
@@ -28,6 +29,26 @@ def filter_show(filters, nx=8, margin=3, scale=10):
         ax.imshow(filters[i, 0], interpolation='nearest')
     plt.show()
 
+def gradcam_show(filters, mpath, index, nx=8):
+    """
+    c.f. https://gist.github.com/aidiary/07d530d5e08011832b12#file-draw_weight-py
+    """
+    # filters = np.transpose(filters, [0, 3, 1, 2])
+    FN, C, FH, FW = filters.shape
+    ny = int(np.ceil(FN / nx))
+
+    fig = plt.figure()
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=1, hspace=0.05, wspace=0.05)
+
+    for i in range(FN):
+        ax = fig.add_subplot(ny, nx, i+1, xticks=[], yticks=[])
+        ax.imshow(filters[i], interpolation='nearest')
+    # plt.show()
+
+
+    plt.savefig("{}/{}.png".format(mpath, index))
+
+
 AUTO = tf.data.AUTOTUNE
 
 # Hyper parameters
@@ -47,7 +68,7 @@ TRAIN_LDR2PSEUDOHDR = True
 TMO = ['exposure', 'reinhard', 'mantiuk', 'drago']
 
 CURRENT_WORKINGDIR = os.getcwd()
-DATASET_DIR = os.path.join(CURRENT_WORKINGDIR, "/home/shin/shinywings/research/sky_ldr2hdr/DataGeneration/dataset/tfrecord")
+DATASET_DIR = os.path.join(CURRENT_WORKINGDIR, "/home/cvnar2/shinywings/research/sky_ldr2hdr/DataGeneration/dataset/tfrecord")
 
 SKYNET_PRETRAINED_DIR = None # None
 LDR2HDR_PRETRAINED_DIR = None # None
@@ -104,9 +125,9 @@ def configureDataset(dirpath, train= "train"):
     ds = ds.map(_parse_function, num_parallel_calls=AUTO)
 
     if train:
-        ds = ds.shuffle(buffer_size = 10000).batch(batch_size=BATCH_SIZE, drop_remainder=False).prefetch(AUTO)
+        ds = ds.shuffle(buffer_size = 10000).batch(batch_size=BATCH_SIZE, drop_remainder=True).prefetch(AUTO)
     else:
-        ds = ds.batch(batch_size=BATCH_SIZE, drop_remainder=False).prefetch(AUTO)
+        ds = ds.batch(batch_size=BATCH_SIZE, drop_remainder=True).prefetch(AUTO)
         
     return ds
 
@@ -149,7 +170,7 @@ def _tone_mapping(hdrs):
         ldr = ldr.astype(np.float32)
         norm_ldr = tf.subtract(tf.divide(ldr,127.5),1.)
         ldrs.append(norm_ldr)
-    
+
     ldrs = tf.convert_to_tensor(ldrs, dtype=tf.float32)
     return ldrs
 
@@ -186,7 +207,7 @@ if __name__=="__main__":
     """"Create Output Image Directory"""
     if(TRAIN_LDR2PSEUDOHDR):
         train_outImgDir_ldr2hdr, test_outImgDir_ldr2hdr = createDirectories(root_dir, name="ldr2hdr", dir="outputImg")
-
+        train_gradcam, test_gradcam = createDirectories(root_dir, name="gradcam", dir="outputImg")
     """Init Dataset"""
     ldr2hdr_train_ds = configureDataset(TRAIN_DIR, train=True)
     ldr2hdr_test_ds  = configureDataset(TEST_DIR, train=False)
@@ -241,43 +262,45 @@ if __name__=="__main__":
         ldr to pseudo-hdr
         """
         @tf.function
-        def train_step(src_hdrs, ldrs, rndrs, poses):
+        def train_step(src_hdrs):
             
-            # hdrs = hdr_logCompression(src_hdrs) # to [-1..1]
+            hdrs = hdr_logCompression(src_hdrs) # to [-1..1]
 
             with tf.GradientTape() as tape_ldr2hdr:
                 
-                outImg = _skynet(ldrs, training=True)
+                outImg, A_k, y_c= _skynet(hdrs, training=True)
                 
-                pred_hdrs = hdr_logDecompression(outImg)
-                outRndr = _skynet.render_scene(pred_hdrs, training=True)
+                # pred_hdrs = hdr_logDecompression(outImg)
+                # outRndr = _skynet.render_scene(pred_hdrs, training=True)
                 
-                l1_loss = tf.reduce_mean(tf.abs(src_hdrs - pred_hdrs))
-                rndr_loss = tf.reduce_mean(tf.square(rndrs - outRndr))
-                combine_loss = l1_loss + rndr_loss
+                l1_loss = tf.reduce_mean(tf.abs(hdrs - outImg))
+                # rndr_loss = tf.reduce_mean(tf.square(rndrs - outRndr))
+                # combine_loss = l1_loss
             
-            gradients_ldr2hdr = tape_ldr2hdr.gradient(combine_loss, _skynet.trainable_variables)
+            grads = tf.gradients(y_c, A_k)
+            gradients_ldr2hdr = tape_ldr2hdr.gradient(l1_loss, _skynet.trainable_variables)
             optimizer_ldr2hdr.apply_gradients(zip(gradients_ldr2hdr, _skynet.trainable_variables))
-            train_loss_ldr2hdr(combine_loss)
+            train_loss_ldr2hdr(l1_loss)
+
+            return outImg, A_k, y_c, grads
 
         @tf.function
-        def test_step(test_src_hdrs, test_ldrs, rndrs, poses):
+        def test_step(test_src_hdrs):
             
-            # test_hdrs = hdr_logCompression(test_src_hdrs) # to [-1..1]
+            test_hdrs = hdr_logCompression(test_src_hdrs) # to [-1..1]
 
-            outImg_test = _skynet(test_ldrs, training= False)
+            outImg_test,  A_k, y_c = _skynet(test_hdrs, training= False)
             
-            pred_test_hdrs = hdr_logDecompression(outImg_test)
-            outRndr_test = _skynet.render_scene(pred_test_hdrs, training=False)
+            # pred_test_hdrs = hdr_logDecompression(outImg_test)
+            # outRndr_test = _skynet.render_scene(pred_test_hdrs, training=False)
 
-            l1_loss = tf.reduce_mean(tf.abs(test_src_hdrs - pred_test_hdrs))
-            rndr_loss = tf.reduce_mean(tf.square(rndrs - outRndr_test))
+            l1_loss = tf.reduce_mean(tf.abs(test_hdrs - outImg_test))
+            # rndr_loss = tf.reduce_mean(tf.square(rndrs - outRndr_test))
                        
-            combine_loss = l1_loss + rndr_loss
+            grads = tf.gradients(y_c, A_k)
+            test_loss_ldr2hdr(l1_loss)
 
-            test_loss_ldr2hdr(combine_loss)
-
-            return outImg_test
+            return outImg_test, A_k, y_c, grads
     
     print("시작")
     
@@ -301,7 +324,16 @@ if __name__=="__main__":
                 
                 ldrs = tf.py_function(_tone_mapping, [hdrs], [tf.float32])[0]
                 
-                train_step(hdrs, ldrs, rndrs, poses)
+                pseudoHDR, A_k, y_c, grads = train_step(hdrs)
+
+            # TODO test
+            ldrs = (ldrs + 1.)*127.5
+            ldrs = ldrs.numpy()
+            ldrs = ldrs[:,:,:,::-1].astype(np.uint8)
+            
+            cam = gc.grad_cam(y_c, A_k, grads, ldrs)
+            # cv2.imwrite("gradcam.jpg", cam)
+            gradcam_show(cam, train_gradcam, epoch)
 
             with train_summary_writer_ldr2hdr.as_default():
                 tf.summary.scalar('loss', train_loss_ldr2hdr.result(), step=epoch+1)
@@ -310,7 +342,15 @@ if __name__=="__main__":
                 
                 ldrs = tf.py_function(_tone_mapping, [hdrs], [tf.float32])[0]
                 
-                pseudoHDR = test_step(hdrs, ldrs, rndrs, poses)
+                pseudoHDR, A_k, y_c, grads = test_step(hdrs)
+                
+            # TODO test
+            ldrs = (ldrs + 1.)*127.5
+            ldrs = ldrs.numpy()
+            ldrs = ldrs[:,:,:,::-1].astype(np.uint8)
+            camt = gc.grad_cam(y_c, A_k, grads, ldrs)
+            # cv2.imwrite("gradcam.jpg", cam)
+            gradcam_show(camt, test_gradcam, epoch)
 
             with test_summary_writer_ldr2hdr.as_default():
                 tf.summary.scalar('loss', test_loss_ldr2hdr.result(), step=epoch+1)
@@ -327,7 +367,7 @@ if __name__=="__main__":
                 for i in range(pseudoHDR.get_shape()[0]):
                     pseudoHDR_epoch_dir = utils.createNewDir(test_outImgDir_ldr2hdr, "{}Epoch_pseudoHDR".format(epoch+1))
                     utils.writeHDR(pseudoHDR[i].numpy(), "{}/{}.{}".format(pseudoHDR_epoch_dir,i,HDR_EXTENSION), pseudoHDR.get_shape()[1:3])
-
+            
             ckpt_ldr2hdr.epoch.assign_add(1)
 
             if int(ckpt_ldr2hdr.epoch) % 5 == 0:

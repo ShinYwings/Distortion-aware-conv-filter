@@ -7,8 +7,7 @@ from tensorflow.keras import layers
 
 import tensorflow_datasets as tfds
 
-import distortion_filter as df
-import filter as f
+import distortion_filter as f
 
 import tensorflow as tf
 print("TensorFlow version:", tf.__version__)

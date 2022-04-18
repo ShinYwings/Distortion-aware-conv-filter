@@ -5,7 +5,6 @@ import time
 
 from tqdm import tqdm
 
-import ldr2hdr
 import skynet
 import grad_cam as gc
 
@@ -33,8 +32,8 @@ def gradcam_show(filters, mpath, index, nx=8):
     """
     c.f. https://gist.github.com/aidiary/07d530d5e08011832b12#file-draw_weight-py
     """
-    # filters = np.transpose(filters, [0, 3, 1, 2])
-    FN, C, FH, FW = filters.shape
+
+    FN = filters.shape[0]
     ny = int(np.ceil(FN / nx))
 
     fig = plt.figure()
@@ -65,10 +64,11 @@ TRAIN_SKYNET = False
 TRAIN_LDR2PSEUDOHDR = True
 
 # Tone Mapping Operators
-TMO = ['exposure', 'reinhard', 'mantiuk', 'drago']
+TMO = ['reinhard', 'mantiuk', 'drago']
 
 CURRENT_WORKINGDIR = os.getcwd()
-DATASET_DIR = os.path.join(CURRENT_WORKINGDIR, "/home/cvnar2/shinywings/research/DataGeneration/dataset/tfrecord")
+
+DATASET_DIR = os.path.join(CURRENT_WORKINGDIR, "/home/shin/shinywings/research/DataGeneration/dataset/tfrecord")
 
 SKYNET_PRETRAINED_DIR = None # None
 LDR2HDR_PRETRAINED_DIR = None # None
@@ -124,6 +124,13 @@ def configureDataset(dirpath, train= "train"):
     ds = tf.data.TFRecordDataset(filenames=tfrecords_list, num_parallel_reads=AUTO, compression_type="GZIP")
     ds = ds.map(_parse_function, num_parallel_calls=AUTO)
 
+    # TODO DEBUG
+    # ds = ds.take(1000)
+    # if train:
+    #     ds = ds.take(700).shuffle(buffer_size = 100).batch(batch_size=BATCH_SIZE, drop_remainder=True).prefetch(AUTO)
+    # else:
+    #     ds = ds.skip(700).batch(batch_size=BATCH_SIZE, drop_remainder=True).prefetch(AUTO)
+    
     if train:
         ds = ds.shuffle(buffer_size = 10000).batch(batch_size=BATCH_SIZE, drop_remainder=True).prefetch(AUTO)
     else:
@@ -157,14 +164,10 @@ def _tone_mapping(hdrs):
 
         choice = np.random.randint(0, len(TMO))
 
-        if TMO[choice] == "exposure":
-            pe = utils.PercentileExposure()
-            ldr = pe(hdr)
-        else:
-            try:
-                ldr = random_tone_map(hdr.numpy(), TMO[choice])
-            except:
-                ldr = np.zeros_like(hdr.numpy())
+        try:
+            ldr = random_tone_map(hdr.numpy(), TMO[choice])
+        except:
+            ldr = np.zeros_like(hdr.numpy())
 
         # Normalize to [-1..1]
         ldr = ldr.astype(np.float32)
@@ -277,7 +280,27 @@ if __name__=="__main__":
                 # rndr_loss = tf.reduce_mean(tf.square(rndrs - outRndr))
                 # combine_loss = l1_loss
             
-            grads = tf.gradients(y_c, A_k)
+            grads = []
+
+            # TODO softmax experiment
+            y_c = tf.nn.softmax(y_c)
+
+            # TODO declare batch num as a variable
+            one_hot = tf.eye(64)
+            y_c = y_c[6]
+            y_c = tf.expand_dims(y_c, axis=-1)
+            signal = tf.matmul(one_hot, y_c) # get signal for each parameter
+
+            # tf.print("\n#######signal\n", signal.get_shape())
+            for idx in range(signal.get_shape()[0]):
+                loss = tf.reduce_mean(signal[idx])
+                # tf.print("\n#######loss\n", loss, "\n", loss.get_shape())
+                grad = tf.gradients(loss, A_k)[0]
+                norm_grads = tf.divide(grad, tf.sqrt(tf.reduce_mean(tf.square(grad))) + tf.constant(1e-5))
+                grads.append(norm_grads[6])
+            
+            # tf.print("\n#######grads\n", tf.shape(grads))
+
             gradients_ldr2hdr = tape_ldr2hdr.gradient(l1_loss, _skynet.trainable_variables)
             optimizer_ldr2hdr.apply_gradients(zip(gradients_ldr2hdr, _skynet.trainable_variables))
             train_loss_ldr2hdr(l1_loss)
@@ -289,15 +312,33 @@ if __name__=="__main__":
             
             test_hdrs = hdr_logCompression(test_src_hdrs) # to [-1..1]
 
-            outImg_test,  A_k, y_c = _skynet(test_hdrs, training= False)
+            outImg_test, A_k, y_c = _skynet(test_hdrs, training= False)
             
             # pred_test_hdrs = hdr_logDecompression(outImg_test)
             # outRndr_test = _skynet.render_scene(pred_test_hdrs, training=False)
 
+            grads = []
+
+            # TODO softmax experiment
+            y_c = tf.nn.softmax(y_c)
+
+            # TODO declare batch num as a variable 
+            one_hot = tf.eye(64)
+            y_c = y_c[6]
+            y_c = tf.expand_dims(y_c, axis=-1)
+            signal = tf.matmul(one_hot, y_c) # get signal for each parameter
+
+            # tf.print("\n#######signal\n", signal.get_shape())
+            for idx in range(signal.get_shape()[0]):
+                loss = tf.reduce_mean(signal[idx])
+                # tf.print("\n#######loss\n", loss, "\n", loss.get_shape())
+                grad = tf.gradients(loss, A_k)[0]
+                norm_grads = tf.divide(grad, tf.sqrt(tf.reduce_mean(tf.square(grad))) + tf.constant(1e-5))
+                grads.append(norm_grads[6])
+
             l1_loss = tf.reduce_mean(tf.abs(test_hdrs - outImg_test))
             # rndr_loss = tf.reduce_mean(tf.square(rndrs - outRndr_test))
-            
-            grads = tf.gradients(y_c, A_k)
+
             test_loss_ldr2hdr(l1_loss)
 
             return outImg_test, A_k, y_c, grads
@@ -322,17 +363,19 @@ if __name__=="__main__":
             
             for step, (hdrs, rndrs, poses) in enumerate(tqdm(ldr2hdr_train_ds)):
                 
-                
                 pseudoHDR, A_k, y_c, grads = train_step(hdrs)
+
+            ldrs = tf.py_function(_tone_mapping, [hdrs], [tf.float32])[0]
+            # TODO test
+            ldrs = (ldrs + 1.)*127.5
+            ldrs = ldrs.numpy()
+            ldrs = ldrs[:,:,:,::-1].astype(np.uint8)
             
-            # ldrs = tf.py_function(_tone_mapping, [hdrs], [tf.float32])[0]
-                
-            # # TODO test
-            # ldrs = (ldrs + 1.)*127.5
-            # ldrs = ldrs.numpy()
-            # ldrs = ldrs[:,:,:,::-1].astype(np.uint8)
-            
-            # cam = gc.grad_cam(y_c, A_k, grads, ldrs)
+            # Get grad-cam of the 7th image in the batch
+            # TODO declare batch num as a variable 
+            cam = gc.grad_cam(y_c[6], A_k[6], ldrs[6], grads)
+            # cam return : [param#, h, w, rgb channels]
+
             # cv2.imwrite("gradcam.jpg", cam)
             # gradcam_show(cam, train_gradcam, epoch)
 
@@ -340,17 +383,19 @@ if __name__=="__main__":
                 tf.summary.scalar('loss', train_loss_ldr2hdr.result(), step=epoch+1)
             
             for step, (hdrs, rndrs, poses) in enumerate(tqdm(ldr2hdr_test_ds)):
-                
-                
+                              
                 pseudoHDR, A_k, y_c, grads = test_step(hdrs)
-            
-            # ldrs = tf.py_function(_tone_mapping, [hdrs], [tf.float32])[0]
-                   
-            # # TODO test
-            # ldrs = (ldrs + 1.)*127.5
-            # ldrs = ldrs.numpy()
-            # ldrs = ldrs[:,:,:,::-1].astype(np.uint8)
-            # camt = gc.grad_cam(y_c, A_k, grads, ldrs)
+                
+            # TODO test
+            ldrs = tf.py_function(_tone_mapping, [hdrs], [tf.float32])[0]
+            ldrs = (ldrs + 1.)*127.5
+            ldrs = ldrs.numpy()
+            ldrs = ldrs[:,:,:,::-1].astype(np.uint8)
+
+            # Get grad-cam of the 7th image in the batch
+            # TODO declare batch num as a variable 
+            camt = gc.grad_cam(y_c[6], A_k[6], ldrs[6], grads)
+
             # cv2.imwrite("gradcam.jpg", cam)
             # gradcam_show(camt, test_gradcam, epoch)
 

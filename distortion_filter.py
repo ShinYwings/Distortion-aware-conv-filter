@@ -1,91 +1,47 @@
-############
-# AUTHOR: An Jiaoyang
-# DATE: 2018-10-11
-############
-"""Deformable Convolutional Layer
-"""
 import tensorflow as tf
-from tensorflow.keras.layers import Conv2D
+from tensorflow.keras.layers import Layer
 import numpy as np
 
-class DistortionConvLayer(Conv2D):
+class DistortionConvLayer(Layer):
     """Only support "channel last" data format"""
     def __init__(self,
                  filters,
-                 kernel_size,
-                 strides=(1, 1),
-                 padding='same',
-                 data_format=None,
-                 dilation_rate=(1, 1),
-                 num_deformable_group=None,
-                 activation=None,
-                 use_bias=True,
+                 kernel_size=3,
+                 strides=1,
+                 padding='VAILD',
+                 dilation_rate=1,
                  kernel_initializer='glorot_uniform',
-                 bias_initializer='zeros',
-                 kernel_regularizer=None,
-                 bias_regularizer=None,
-                 activity_regularizer=None,
-                 kernel_constraint=None,
-                 bias_constraint=None,
-                 **kwargs):
-        """`kernel_size`, `strides` and `dilation_rate` must have the same value in both axis.
-
-        :param num_deformable_group: split output channels into groups, offset shared in each group. If
-        this parameter is None, then set  num_deformable_group=filters.
-        """
-        super(DistortionConvLayer, self).__init__(
-            filters=filters,
-            kernel_size=kernel_size,
-            strides=strides,
-            padding=padding,
-            data_format=data_format,
-            dilation_rate=dilation_rate,
-            activation=activation,
-            use_bias=use_bias,
-            kernel_initializer=kernel_initializer,
-            bias_initializer=bias_initializer,
-            kernel_regularizer=kernel_regularizer,
-            bias_regularizer=bias_regularizer,
-            activity_regularizer=activity_regularizer,
-            kernel_constraint=kernel_constraint,
-            bias_constraint=bias_constraint,
-            **kwargs)
-        self.kernel = None
-        self.bias = None
-        self.offset_layer_kernel = None
-        self.offset_layer_bias = None
-        if num_deformable_group is None:
-            num_deformable_group = filters
-        if filters % num_deformable_group != 0:
-            raise ValueError('"filters" mod "num_deformable_group" must be zero')
-        self.num_deformable_group = num_deformable_group
+                 bias_initializer='zeros'):
+        
+        super(DistortionConvLayer, self).__init__()
+        self.filters = filters
+        self.kernel_size=kernel_size
+        self.strides=strides
+        self.padding=padding
+        self.kernel_initializer = kernel_initializer
+        self.bias_initializer = bias_initializer
+        self.dilation_rate = dilation_rate
 
     def build(self, input_shape):
-        b, h, w, c = input_shape
-        input_dim = input_shape[-1]
-        kernel_shape = self.kernel_size + (input_dim, self.filters)
-        # we want to use depth-wise conv
-        # kernel_shape = self.kernel_size + (self.filters * input_dim, 1)
-    
+        _, h, w, input_dim = input_shape
+        k_h, k_w = self.kernel_size, self.kernel_size
+        kernel_shape = [int(k_h*k_w*input_dim), self.filters]
+        
         self.kernel = self.add_weight(
             name='kernel',
             shape=kernel_shape,
             initializer=self.kernel_initializer,
-            regularizer=self.kernel_regularizer,
-            constraint=self.kernel_constraint,
             trainable=True,
             dtype=self.dtype)
-        if self.use_bias:
-            self.bias = self.add_weight(
-                name='bias',
-                shape=(self.filters,),
-                initializer=self.bias_initializer,
-                regularizer=self.bias_regularizer,
-                constraint=self.bias_constraint,
-                trainable=True,
-                dtype=self.dtype)
+       
+        self.bias = self.add_weight(
+            name='bias',
+            shape=(self.filters,),
+            initializer=self.bias_initializer,
+            trainable=True,
+            dtype=self.dtype)
 
-        self.offset = DistortionConvLayer.distortion(h, w, dilation_rate=self.dilation_rate[0], skydome=True)
+        self.offset = self.distortion(h, w, skydome=True)
 
         super(DistortionConvLayer, self).build(input_shape=input_shape)
 
@@ -96,13 +52,10 @@ class DistortionConvLayer(Conv2D):
         offset = self.offset
 
         # some length
-        batch_size = inputs.get_shape()[0]
-        channel_in = inputs.get_shape()[-1]
-        in_h, in_w = [i for i in inputs.get_shape()[1: 3]]  # input feature map size
-        out_h, out_w = [i for i in offset.get_shape()[1: 3]]  # output feature map size
-        # out_h, out_w = in_h, in_w  # output feature map size
+        batch_size, in_h, in_w, channel_in = inputs.get_shape() # input feature map size
+        out_h, out_w = offset.get_shape()[1: 3]  # output feature map size
         
-        filter_h, filter_w = self.kernel_size
+        filter_h, filter_w = self.kernel_size, self.kernel_size
         
         # get x, y axis offset
         y_off, x_off = offset[:, :, :, :, 0], offset[:, :, :, :, 1]
@@ -129,11 +82,7 @@ class DistortionConvLayer(Conv2D):
         x= tf.where( x < 0 , tf.add(x, in_w), x)
         x= tf.where( x > in_w - 1 , tf.subtract(x, in_w), x)
 
-        
-        y, x = [tf.expand_dims(i, axis=-1) for i in [y, x]]
-        y, x = [tf.tile(i, [batch_size, 1, 1, self.num_deformable_group, 1]) for i in [y, x]] # a pixel in the output feature map has several same offsets 
-        
-        y, x = [tf.reshape(i, [*i.shape[0: 3], -1]) for i in [y, x]]
+        y, x = [tf.tile(i, [batch_size, 1, 1, 1]) for i in [y, x]] # a pixel in the output feature map has several same offsets 
 
         # get four coordinates of points around (x, y)
         y0, x0 = [tf.cast(tf.floor(i), dtype=tf.int32) for i in [y, x]]
@@ -141,98 +90,77 @@ class DistortionConvLayer(Conv2D):
 
         # clip
         y0, y1 = [tf.clip_by_value(i, 0, in_h - 1) for i in [y0, y1]]
-        x0, x1 = [tf.clip_by_value(i, 0, in_w - 1) for i in [x0, x1]]
-
+        # x0, x1 = [tf.clip_by_value(i, 0, in_w - 1) for i in [x0, x1]]
+        
+        # consider 360 degree
+        x0_w, x1_w = x0, x1 # leave original one in order to yield weights
+        x0, x1 = [tf.where( i < 0 , tf.add(i, in_w), i) for i in [x0, x1]]
+        x0, x1 = [tf.where( i > in_w - 1 , tf.subtract(i, in_w), i) for i in [x0, x1]]
+    
         # get pixel values
         indices = [[y0, x0], [y0, x1], [y1, x0], [y1, x1]]
 
-        p0, p1, p2, p3 = [tf.cast(DistortionConvLayer._get_pixel_values_at_point(inputs, i)
+
+        p0, p1, p2, p3 = [tf.cast(self._get_pixel_values_at_point(inputs, i)
                             , dtype=tf.float32) for i in indices]
 
         # cast to float
-        x0, x1, y0, y1 = [tf.cast(i, dtype=tf.float32) for i in [x0, x1, y0, y1]]
+        x0_w, x1_w, y0, y1 = [tf.cast(i, dtype=tf.float32) for i in [x0_w, x1_w, y0, y1]]
         
         # weights
-        # w0 = (y1 - y) * (x1 - x)
-        # w1 = (y1 - y) * (x - x0)
-        # w2 = (y - y0) * (x1 - x)
-        # w3 = (y - y0) * (x - x0)
-        w0 = tf.multiply(tf.subtract(y1, y), tf.subtract(x1, x))
-        w1 = tf.multiply(tf.subtract(y1, y), tf.subtract(x, x0))
-        w2 = tf.multiply(tf.subtract(y, y0), tf.subtract(x1, x))
-        w3 = tf.multiply(tf.subtract(y, y0), tf.subtract(x, x0))
+        w0 = tf.multiply(tf.subtract(y1, y), tf.subtract(x1_w, x))
+        w1 = tf.multiply(tf.subtract(y1, y), tf.subtract(x, x0_w))
+        w2 = tf.multiply(tf.subtract (y, y0), tf.subtract(x1_w, x))
+        w3 = tf.multiply(tf.subtract(y, y0), tf.subtract(x, x0_w))
 
         # expand dim for broadcast
         w0, w1, w2, w3 = [tf.expand_dims(i, axis=-1) for i in [w0, w1, w2, w3]]
 
         # bilinear interpolation
-        # pixels = tf.add_n([w0 * p0, w1 * p1, w2 * p2, w3 * p3])
         pixels = tf.add_n([tf.multiply(w0, p0), tf.multiply(w1, p1), 
                         tf.multiply(w2, p2), tf.multiply(w3, p3)])
-        # current shape at this line : [b, h, w, grid size(3x3=9)*out_channels, in_channels(3)]
-
+        # current shape at this line : [b, h, w, grid size*out_channels, in_channels(3)]
 
         # reshape the "big" feature map
+        pixels = tf.reshape(pixels, [batch_size, out_h* out_w, filter_h* filter_w* channel_in])
 
-        # 1, 32, 128, 9, 2 ( b, h, w, grid # * out_channels, in_channels
-        #                     =>   b, h, w, 3, 3, out_channels, in_channels)
-        pixels = tf.reshape(pixels, [batch_size, out_h, out_w, filter_h, filter_w, self.num_deformable_group, channel_in])
-        pixels = tf.transpose(pixels, [0, 1, 3, 2, 4, 5, 6])
-        pixels = tf.reshape(pixels, [batch_size, out_h * filter_h, out_w * filter_w, self.num_deformable_group*channel_in])
         # current shape at this line : [b, 3h, 3w, out_channels, in_channels]
         
-        # copy channels to same group
-        
-        """
-         return same value when # filters is equal to num_deformable_group 
-        """
-        # feat_in_group = self.filters // self.num_deformable_group
-        # pixels = tf.tile(pixels, [1, 1, 1, 1, feat_in_group])
-        # pixels = tf.reshape(pixels, [batch_size, out_h * filter_h, out_w * filter_w, self.num_deformable_group, channel_in])
-        ## current shape at this line : [b, h*h_filter, w*w_filter, out_channels * in_channels]
-
         # current pixels shape at this line : [b, 3h, 3w, out_channels, in_channels]
         # self.kernel = [h, w, out_channels, in_channels]
-        out = tf.nn.conv2d(pixels, self.kernel, strides=[1, filter_h, filter_w, 1], padding='VALID')
+        out = tf.matmul(pixels, self.kernel)
         
-        # add the output feature maps in the same group
-        # out = tf.reshape(out, [batch_size, out_h, out_w, self.filters, channel_in])
-        # out = tf.reduce_sum(out, axis=-1)
+        out = tf.nn.bias_add(out, self.bias)
+
+        out = tf.reshape(out, [batch_size, out_h, out_w, self.filters])
         
-        if self.use_bias:
-            out = tf.nn.bias_add(out, self.bias)
-        
-        return self.activation(out)
+        return out
 
     def _pad_input(self, inputs):
         """Check if input feature map needs padding, because we don't use the standard Conv() function.
+        
+        Don't use dilated filter itself, only offset can expand the kernel gap
 
         :param inputs:
         :return: padded input feature map
         """
-        # When padding is 'same', we should pad the feature map.
-        # if padding == 'same', output size should be `ceil(input / stride)`
-        if self.padding == 'same':
-            in_shape = inputs.get_shape().as_list()[1: 3]
-            padding_list = []
-            for i in range(2):
-                filter_size = self.kernel_size[i]
-                dilation = self.dilation_rate[i]
-                dilated_filter_size = filter_size + (filter_size - 1) * (dilation - 1)
-                same_output = (in_shape[i] + self.strides[i] - 1) // self.strides[i]
-                valid_output = (in_shape[i] - dilated_filter_size + self.strides[i]) // self.strides[i]
-                if same_output == valid_output:
-                    padding_list += [0, 0]
-                else:
-                    p = dilated_filter_size - 1
-                    p_0 = p // 2
-                    padding_list += [p_0, p - p_0]
-            if sum(padding_list) != 0:
-                padding = [[0, 0],
-                           [padding_list[0], padding_list[1]],  # top, bottom padding
-                           [padding_list[2], padding_list[3]],  # left, right padding
-                           [0, 0]]
-                inputs = tf.pad(inputs, padding)
+        in_shape = inputs.get_shape().as_list()[1: 3]
+        padding_list = []
+        for i in range(2):
+            same_output = (in_shape[i] + self.strides - 1) // self.strides
+            valid_output = (in_shape[i] - self.kernel_size + self.strides) // self.strides
+            if same_output == valid_output:
+                padding_list += [0, 0]
+            else:
+                p = self.kernel_size - 1
+                p_0 = p // 2
+                padding_list += [p_0, p - p_0]
+        if sum(padding_list) != 0:
+            padding = [[0, 0],
+                        [padding_list[0], padding_list[1]],  # top, bottom padding
+                        [padding_list[2], padding_list[3]],  # left, right padding
+                        [0, 0]]
+            inputs = tf.pad(inputs, padding)
         return inputs
 
     def _get_conv_indices(self, feature_map_size):
@@ -246,15 +174,14 @@ class DistortionConvLayer(Conv2D):
         x, y = tf.meshgrid(tf.range(feat_w), tf.range(feat_h))
         x, y = [tf.reshape(i, [1, *i.get_shape(), 1]) for i in [x, y]]  # shape [1, h, w, 1]
         x, y = [tf.image.extract_patches(i,
-                                               [1, *self.kernel_size, 1],
-                                               [1, *self.strides, 1],
-                                               [1, *self.dilation_rate, 1],
+                                               [1, self.kernel_size, self.kernel_size, 1],
+                                               [1, self.strides, self.strides, 1],
+                                               [1, 1, 1, 1], # dilation_rate must be 1
                                                'VALID')
                 for i in [x, y]]   # shape [1, 1, feat_w - kernel_size + 1, feat_h * kernel_size]    [0 1 2 0 1 2 0 1 2]
         return y, x
 
-    @staticmethod
-    def _get_pixel_values_at_point(inputs, indices):
+    def _get_pixel_values_at_point(self, inputs, indices):
         """get pixel values
 
         :param inputs:
@@ -270,31 +197,42 @@ class DistortionConvLayer(Conv2D):
         pixel_idx = tf.stack([b, y, x], axis=-1)
         return tf.gather_nd(inputs, pixel_idx)
 
-    @staticmethod
-    def distortion(h,w, dilation_rate=1., skydome=True):
+    def make_grid(self):
+        # R_grid should be upside down because image pixel coordinate is orientied from top left
+        assert self.kernel_size % 2 == 1, "kernel_size must be odd number, current kernel size : {}".format(self.kernel_size)
+        grid = []
+        r = self.kernel_size // 2
+        
+        for y in range(r, -r-1, -1):
+            for x in range(r, -r-1, -1):
+                grid.append([x,y])
+
+        return grid
+
+    def distortion(self, h, w, skydome=True):
 
         pi = np.math.pi
+        n = self.kernel_size // 2
+        middle = n * (self.kernel_size + 1)
         
-        unit_w = tf.divide(2*pi, w)
-        unit_h = tf.divide(pi, h*2 if skydome else h)
+        unit_w = tf.divide(2 * pi, w)
+        unit_h = tf.divide(pi, h * 2 if skydome else h)
 
-        rho = tf.math.tan(unit_w) * dilation_rate
+        rho = tf.math.tan(unit_w) * self.dilation_rate
 
-        v = tf.constant([0.,1.,0.])
+        v = tf.constant([0., 1., 0.])
 
-        # R_grid should be upside down because image pixel coordinate is orientied from top left
-        # r_grid = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,0],[0,1],[1,-1],[1,0],[1,1]]
-        r_grid = [[1,-1],[1,0],[1,1],[0,-1],[0,0],[0,1],[-1,-1],[-1,0],[-1,1]]
+        r_grid= self.make_grid()
         
-        x = int(w*0.5)
+        x = int(w * 0.5)
         
-        kernel = list()
+        res = list()
 
         for y in range(0,h):
 
             # radian
-            theta = (x - 0.5*w) * unit_w
-            phi   = (h - y) * unit_h if skydome else (h*0.5 - y) * unit_h
+            theta = (x - 0.5 * w) * unit_w
+            phi   = (h - y) * unit_h if skydome else (h * 0.5 - y) * unit_h
 
             x_u = tf.math.cos(phi)*tf.math.cos(theta)
             y_u = tf.math.sin(phi)
@@ -306,13 +244,12 @@ class DistortionConvLayer(Conv2D):
             
             r_sphere = list()
             for r in r_grid:
-                r_sphere.append(tf.multiply(rho, tf.add(r[0]*t_x, r[1]*t_y)))
+                r_sphere.append(tf.multiply(rho, tf.add(r[0] * t_x, r[1] * t_y)))
             r_sphere = tf.squeeze(r_sphere)
             p_ur = tf.add(p_u, r_sphere)
             
             k = list()
             for ur_i in p_ur:
-                # ur_i = ur_ii.numpy()
                 if ur_i[0] > 0:
                     theta_r = tf.math.atan2(ur_i[2], ur_i[0])
                 elif ur_i[0] < 0:
@@ -326,22 +263,27 @@ class DistortionConvLayer(Conv2D):
                     elif ur_i[2] < 0:
                         theta_r = -pi*0.5
                     else:
-                        print("undefined coordinates")
-                        exit(0)
+                        raise Exception("undefined coordinates")
                         
                 phi_r = tf.math.asin(ur_i[1])
 
                 x_r = (tf.divide(theta_r, pi) + 1)*0.5*w
                 y_r = (1. - tf.divide(2*phi_r, pi))*h if skydome else (0.5 - tf.divide(phi_r, pi))*h
 
-                k.append([x_r, y_r])
+                k.append([y_r, x_r])
 
-            offset = tf.subtract(k, k[4])
-            kernel.append(offset)
+            offset = tf.subtract(k, k[middle])
+            res.append(offset)
 
-        kernel = tf.convert_to_tensor(kernel)
-        kernel = tf.stack([kernel] * w)
-        kernel = tf.transpose(kernel, [1, 0, 2, 3])   # 32, 128, 9, 2 ( h, w, grid #, (x,y) )
-        kernel = tf.expand_dims(kernel, 0)  # 1, 32, 128, 9, 2 ( b, h, w, grid #, (x,y) )
+        res = tf.convert_to_tensor(res)
         
-        return kernel
+        res = tf.stack([res] * w)
+        res = tf.transpose(res, [1, 0, 2, 3])   # 32, 128, 9, 2 ( h, w, grid #, (y,x) )
+        res = tf.expand_dims(res, 0)  # 1, 32, 128, 9, 2 ( b, h, w, grid #, (y,x) )
+        
+        # y, x = kernel[:,:,0], kernel[:,:,1]
+        # y, x = [tf.stack([i] * w) for i in [y,x]]
+        # y, x = [tf.transpose(i, [1, 0, 2]) for i in [y,x]] # 32, 128, 9 ( h, w, grid # )
+        # y, x = [tf.expand_dims(i, 0) for i in [y,x]] # 1, 32, 128, 9, 2 ( b, h, w, grid #, (y,x) )
+        
+        return res

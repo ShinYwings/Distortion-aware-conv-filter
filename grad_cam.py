@@ -1,11 +1,7 @@
-from keras.preprocessing import image
-from keras.layers.core import Lambda
 from tensorflow.python.framework import ops
 import keras.backend as K
 import tensorflow as tf
 import numpy as np
-import keras
-import sys
 import cv2
 
 def target_category_loss(x, category_index, nb_classes):
@@ -77,7 +73,7 @@ def deprocess_image(x):
     x = np.clip(x, 0, 255).astype('uint8')
     return x
 
-def grad_cam(y_c, A_k, grads, image):
+def grad_cam(y_c, A_k, image, grads):
 
     # nb_classes = 1000
     # target_layer = lambda x: target_category_loss(x, category_index, nb_classes)
@@ -94,7 +90,12 @@ def grad_cam(y_c, A_k, grads, image):
     # A_k =  [l for l in model.layers[0].layers if l.name is layer_name][0].output
     
     # TODO norm 해줘도 되고 안해줘도 되는듯?
+
+    # tf.print("\n#########grads\n",grads, summarize = -1)
+    # tf.print("\n#########grads\n",tf.shape(grads))
+
     # grads = normalize(K.gradients(y_c, A_k)[0])
+    
     # grads = tf.gradients(y_c, A_k)[0]
     
     # gradient_function = K.function([image], [A_k, grads])
@@ -107,10 +108,9 @@ def grad_cam(y_c, A_k, grads, image):
     # TODO 이게 맞아? ** 0번째 배치 지우기 **
     # output, grads_val = output[:, :], grads_val[:, :, :, :]
 
-    # tf.print("\n###############\nA_k\n###############\n",tf.shape(A_k))
-    # tf.print("\n###############\ny_c\n###############\n",tf.shape(y_c))
+    
     # tf.print("\n###############\ngrads\n###############\n",tf.shape(grads))
-    output, grads_val = A_k.numpy(), grads[0].numpy()
+    output, grads_val = A_k.numpy(), grads
 
     # global average pooling 연산
     # gradient의 width, height에 대해 평균을 구해서(1/Z) weights(a^c_k) 계산
@@ -121,23 +121,24 @@ def grad_cam(y_c, A_k, grads, image):
     
     # feature map(conv_output)의 (width, height)로 초기화
     # cam = np.ones(output.shape[0 : 2], dtype = np.float32)
-    cam = np.zeros(shape=output.shape[0 : 3], dtype = np.float32)
 
-    # print("\n###############\nweight\n###############\n",np.shape(weights))
+    param_size = np.shape(grads_val)[0]
+    cam_shape = [param_size, output.shape[0], output.shape[1]]
+    cam = np.zeros(shape=cam_shape, dtype = np.float32)
+
+    # print("\n###############\noutput\n###############\n",np.shape(output))
     # Linear Combination
     # for each batch, it has a weight value of 16
 
     batch_size = output.shape[0]
     new_cam = []
 
-    # grad : 32 feature map  16 feature map num
-    for k in range(batch_size):
-        for j, batch in enumerate(weights): 
-            # print("\n###############\nbatch\n###############\n",np.shape(batch))
-            for i, w in enumerate(batch):
-                cam[k, :, :] += w * output[k, :, :, i]
+    for j, batch in enumerate(weights): # Batch is the index # of sky paramters
+        # print("\n###############\nbatch\n###############\n",np.shape(batch))
+        for i, w in enumerate(batch):
+            cam[j, :, :] += w * output[:, :, i]
 
-            new_cam.append( cv2.resize(cam[j], (128, 32)) )
+        new_cam.append(cv2.resize(cam[j], (128, 32)) )
 
     # 계산된 weighted combination 에 ReLU 적용
     new_cam = np.maximum(new_cam, 0)
@@ -152,7 +153,7 @@ def grad_cam(y_c, A_k, grads, image):
     #     image[i] = np.minimum(image[i], 255)
 
     # new_cam = new_cam.astype(np.uint8)
-    # print("\n###############\nimage\n###############\n",np.shape(image))
+    image = [image] * param_size
     
     heatmap = 255*heatmap
     heatmap = heatmap.astype(np.uint8)

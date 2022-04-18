@@ -4,7 +4,7 @@ import ops
 
 import tensorflow_addons as tfa
 
-import filter as df
+import distortion_filter as df
 
 # class transportMatrix(tf.keras.layers.Layer):
 #     def __init__(self, output_square_size=64, channel=3):
@@ -67,7 +67,7 @@ class resBlock(Model):
 
 class resLayer(Model):
 
-    def __init__(self, filters, filter_in, k_h, k_w, strides=1, dilation_rate=2):
+    def __init__(self, filters, filter_in, k_h, k_w, strides=1, dilation_rate=1):
         super(resLayer, self).__init__()
         self.sequence = list()
 
@@ -80,7 +80,9 @@ class resLayer(Model):
         return x
 
 class model(Model):
-    def __init__(self, fc_dim=64, im_height=32, im_width= 128, da_kernel_size=3, dilation_rate=2):
+
+    def __init__(self, fc_dim=64, im_height=32, im_width= 128, da_kernel_size = 3, dilation_rate=1):
+
         super(model, self).__init__()
 
         """skynet + fully conv layers"""
@@ -89,7 +91,7 @@ class model(Model):
         Currently, only stride == 1 is supported.
         mission : make distortion offset hopping
         """
-        # self.conv1 = df.DistortionConvLayer(64, kernel_size=7, strides=2, dilation_rate=5)  # out 24
+
         self.norm1 = tfa.layers.InstanceNormalization(axis=3,
                                    center=True,
                                    scale=True,
@@ -101,7 +103,6 @@ class model(Model):
         self.mp1  = ops.maxpool2d(kernel_size=da_kernel_size, strides=2)
 
         self.res2 = resLayer((16,16), 32, k_h=da_kernel_size, k_w=da_kernel_size, strides=1, dilation_rate=dilation_rate)
-        # self.mp2  = ops.maxpool2d(kernel_size=3, strides=2)
         
         self.flat = tf.keras.layers.Flatten()
         self.fc = tf.keras.layers.Dense(fc_dim)
@@ -141,7 +142,7 @@ class model(Model):
 
         # self.res5 = resLayer((64,64), 64, h=32 , w=128 , k_h=7, k_w=7, strides=1)
 
-        # self.conv2 = ops.conv2d(output_channels=3, k_h=3, k_w=3, strides=1)
+        # self.conv2 = ops.conv2d(output_channels=3, k_h=da_kernel_size, k_w=da_kernel_size, strides=1)
         self.conv2 = df.DistortionConvLayer(3, kernel_size=da_kernel_size, strides=1, dilation_rate=dilation_rate)  # out 24
         
         self.tanh = ops.tanh()
@@ -191,7 +192,7 @@ class model(Model):
         actv1 = self.actv1(norm1)
 
         res1 = self.res1(actv1, training)
-        mp1 = self.mp1(res1)
+        mp1 = self.mp1(res1) 
         
         res2 = self.res2(mp1, training)
         # mp2 = self.mp2(res2)

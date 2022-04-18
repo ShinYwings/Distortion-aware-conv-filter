@@ -201,7 +201,7 @@ class DistortionConvLayer(Layer):
 
     def make_grid(self):
         # R_grid should be upside down because image pixel coordinate is orientied from top left
-        assert self.kernel_size % 2 == 1, "kernel_size must be odd number, current kernel size : {}".format(kernel_size)
+        assert self.kernel_size % 2 == 1, "kernel_size must be odd number, current kernel size : {}".format(self.kernel_size)
         grid = []
         r = self.kernel_size // 2
         

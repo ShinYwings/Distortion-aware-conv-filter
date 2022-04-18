@@ -137,3 +137,9 @@ __pycache__
 tensorboard/
 test/
 outputImg/
+*.d
+
+.vscode/
+
+tensorboard/
+test/

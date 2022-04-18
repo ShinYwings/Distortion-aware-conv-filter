@@ -27,11 +27,10 @@ import filter as df
 
 class resBlock(Model):
 
-    def __init__(self, filter_in, filter_out, k_h=3, k_w=3, strides=1):
+    def __init__(self, filter_in, filter_out, k_h=3, k_w=3, strides=1, dilation_rate=1):
         super(resBlock, self).__init__()
-
-        self.conv1 = ops.conv2d(output_channels=filter_out, k_h=k_h, k_w=k_w, strides=strides)
-        # self.conv1 = df.DistortionConvLayer(filter_out, [k_h, k_w])  # out 24
+        # self.conv1 = ops.conv2d(output_channels=filter_out, k_h=k_h, k_w=k_w, strides=strides)
+        self.conv1 = df.DistortionConvLayer(filter_out, kernel_size=k_h, strides=strides, dilation_rate=dilation_rate)  # out 24
         self.norm1 = tfa.layers.InstanceNormalization(axis=3,
                                    center=True, 
                                    scale=True,
@@ -39,8 +38,9 @@ class resBlock(Model):
                                    gamma_initializer="random_uniform")
         self.elu1 = ops.elu()
         
-        self.conv2 = ops.conv2d(output_channels=filter_out, k_h=k_h, k_w=k_w, strides=strides)
-        # self.conv2 = df.DistortionConvLayer(filter_out, [k_h, k_w])  # out 24
+        # self.conv2 = ops.conv2d(output_channels=filter_out, k_h=k_h, k_w=k_w, strides=strides)
+        self.conv2 = df.DistortionConvLayer(filter_out, kernel_size=k_h, strides=strides, dilation_rate=dilation_rate)  # out 24
+        
         self.norm2 = tfa.layers.InstanceNormalization(axis=3,
                                    center=True, 
                                    scale=True,
@@ -67,12 +67,12 @@ class resBlock(Model):
 
 class resLayer(Model):
 
-    def __init__(self, filters, filter_in, k_h, k_w, strides):
+    def __init__(self, filters, filter_in, k_h, k_w, strides=1, dilation_rate=2):
         super(resLayer, self).__init__()
         self.sequence = list()
 
         for f_in, f_out in zip([filter_in]+ list(filters), filters):
-            self.sequence.append(resBlock(f_in, f_out, k_h=k_h, k_w=k_w, strides=strides))
+            self.sequence.append(resBlock(f_in, f_out, k_h=k_h, k_w=k_w, strides=strides, dilation_rate=dilation_rate))
     
     def call(self, x, training=False):
         for unit in self.sequence:
@@ -80,11 +80,16 @@ class resLayer(Model):
         return x
 
 class model(Model):
-    def __init__(self, fc_dim=64, im_height=32, im_width= 128):
+    def __init__(self, fc_dim=64, im_height=32, im_width= 128, da_kernel_size=3, dilation_rate=2):
         super(model, self).__init__()
 
         """skynet + fully conv layers"""
         self.conv1 = ops.conv2d(output_channels=64, k_h=7, k_w=7, strides=2)
+        """
+        Currently, only stride == 1 is supported.
+        mission : make distortion offset hopping
+        """
+        # self.conv1 = df.DistortionConvLayer(64, kernel_size=7, strides=2, dilation_rate=5)  # out 24
         self.norm1 = tfa.layers.InstanceNormalization(axis=3,
                                    center=True,
                                    scale=True,
@@ -92,20 +97,20 @@ class model(Model):
                                    gamma_initializer="random_uniform")
         self.actv1  = ops.elu()
 
-        self.res1 = resLayer((32,32), 64, k_h=3, k_w=3, strides=1)
-        self.mp1  = ops.maxpool2d(kernel_size=3, strides=2)
+        self.res1 = resLayer((32,32), 64, k_h=da_kernel_size, k_w=da_kernel_size, strides=1, dilation_rate=dilation_rate)
+        self.mp1  = ops.maxpool2d(kernel_size=da_kernel_size, strides=2)
 
-        self.res2 = resLayer((16,16), 32, k_h=3, k_w=3, strides=1)
-        self.mp2  = ops.maxpool2d(kernel_size=3, strides=2)
+        self.res2 = resLayer((16,16), 32, k_h=da_kernel_size, k_w=da_kernel_size, strides=1, dilation_rate=dilation_rate)
+        # self.mp2  = ops.maxpool2d(kernel_size=3, strides=2)
         
         self.flat = tf.keras.layers.Flatten()
         self.fc = tf.keras.layers.Dense(fc_dim)
 
-        self.defc = ops.dfc2d(out_height=int(im_height/ 8),
-                                out_width=int(im_width/ 8),
+        self.defc = ops.dfc2d(out_height=int(im_height/ 4),
+                                out_width=int(im_width/ 4),
                                     out_channels=16)
 
-        self.us1 = ops.deconv2d(output_channels=16, output_imshape=[int(im_height/ 4), int(im_width/ 4)], k_h=3, k_w=3, method='resize')
+        self.us1 = ops.deconv2d(output_channels=32, output_imshape=[int(im_height/ 2), int(im_width/ 2)], k_h=3, k_w=3, method='resize')
         
         self.norm2 = tfa.layers.InstanceNormalization(axis=3,
                                 center=True, 
@@ -114,9 +119,9 @@ class model(Model):
                                 gamma_initializer="random_uniform")
         self.actv2 = ops.elu()
 
-        self.res3 = resLayer((16,16,16), 16, k_h=3, k_w=3, strides=1)
+        self.res3 = resLayer((32,32,32),32, k_h=da_kernel_size, k_w=da_kernel_size, strides=1, dilation_rate=dilation_rate)
         
-        self.us2 = ops.deconv2d(output_channels=32, output_imshape=[int(im_height/ 2), int(im_width/ 2)], k_h=3, k_w=3, method='resize')
+        self.us2 = ops.deconv2d(output_channels=64, output_imshape=[int(im_height), int(im_width)], k_h=3, k_w=3,  method='resize')
         self.norm3 = tfa.layers.InstanceNormalization(axis=3,
                                 center=True, 
                                 scale=True,
@@ -124,19 +129,21 @@ class model(Model):
                                 gamma_initializer="random_uniform")
         self.actv3 = ops.elu()
 
-        self.res4 = resLayer((32,32), 32, k_h=3, k_w=3, strides=1)
+        self.res4 = resLayer((64,64), 64, k_h=da_kernel_size, k_w=da_kernel_size, strides=1, dilation_rate=dilation_rate)
 
-        self.us3 = ops.deconv2d(output_channels=64, output_imshape=[im_height, im_width], k_h=3, k_w=3, method='resize')
-        self.norm4 = tfa.layers.InstanceNormalization(axis=3,
-                                center=True, 
-                                scale=True,
-                                beta_initializer="random_uniform",
-                                gamma_initializer="random_uniform")
-        self.actv4 = ops.elu()
+        # self.us3 = ops.deconv2d(output_channels=64, output_imshape=[im_height, im_width], k_h=3, k_w=3, method='resize')
+        # self.norm4 = tfa.layers.InstanceNormalization(axis=3,
+        #                         center=True, 
+        #                         scale=True,
+        #                         beta_initializer="random_uniform",
+        #                         gamma_initializer="random_uniform")
+        # self.actv4 = ops.elu()
 
-        self.res5 = resLayer((64,64), 64, k_h=3, k_w=3, strides=1)
+        # self.res5 = resLayer((64,64), 64, h=32 , w=128 , k_h=7, k_w=7, strides=1)
 
-        self.conv2 = ops.conv2d(output_channels=3, k_h=7, k_w=7, strides=1)
+        # self.conv2 = ops.conv2d(output_channels=3, k_h=3, k_w=3, strides=1)
+        self.conv2 = df.DistortionConvLayer(3, kernel_size=da_kernel_size, strides=1, dilation_rate=dilation_rate)  # out 24
+        
         self.tanh = ops.tanh()
 
         # 64 =  sqrt(128 * 64) 
@@ -187,9 +194,9 @@ class model(Model):
         mp1 = self.mp1(res1)
         
         res2 = self.res2(mp1, training)
-        mp2 = self.mp2(res2)
+        # mp2 = self.mp2(res2)
         
-        flat = self.flat(mp2)
+        flat = self.flat(res2)
         fc = self.fc(flat)
 
         defc = self.defc(fc)
@@ -206,16 +213,16 @@ class model(Model):
 
         res4 = self.res4(actv3, training)
 
-        us3 = self.us3(res4)
-        norm4 = self.norm4(us3)
-        actv4 = self.actv4(norm4)
+        # us3 = self.us3(res4)
+        # norm4 = self.norm4(us3)
+        # actv4 = self.actv4(norm4)
 
-        res5 = self.res5(actv4, training)
+        # res5 = self.res5(actv4, training)
 
-        conv2 = self.conv2(res5)
+        conv2 = self.conv2(res4)
         output = self.tanh(conv2)
         
-        return output , mp2, fc
+        return output , res2, fc
 
     # def render_scene(self, x, training="training"):
         

@@ -68,7 +68,7 @@ TRAIN_LDR2PSEUDOHDR = True
 TMO = ['exposure', 'reinhard', 'mantiuk', 'drago']
 
 CURRENT_WORKINGDIR = os.getcwd()
-DATASET_DIR = os.path.join(CURRENT_WORKINGDIR, "/home/cvnar2/shinywings/research/sky_ldr2hdr/DataGeneration/dataset/tfrecord")
+DATASET_DIR = os.path.join(CURRENT_WORKINGDIR, "/home/cvnar2/shinywings/research/DataGeneration/dataset/tfrecord")
 
 SKYNET_PRETRAINED_DIR = None # None
 LDR2HDR_PRETRAINED_DIR = None # None
@@ -296,7 +296,7 @@ if __name__=="__main__":
 
             l1_loss = tf.reduce_mean(tf.abs(test_hdrs - outImg_test))
             # rndr_loss = tf.reduce_mean(tf.square(rndrs - outRndr_test))
-                       
+            
             grads = tf.gradients(y_c, A_k)
             test_loss_ldr2hdr(l1_loss)
 
@@ -322,35 +322,37 @@ if __name__=="__main__":
             
             for step, (hdrs, rndrs, poses) in enumerate(tqdm(ldr2hdr_train_ds)):
                 
-                ldrs = tf.py_function(_tone_mapping, [hdrs], [tf.float32])[0]
                 
                 pseudoHDR, A_k, y_c, grads = train_step(hdrs)
-
-            # TODO test
-            ldrs = (ldrs + 1.)*127.5
-            ldrs = ldrs.numpy()
-            ldrs = ldrs[:,:,:,::-1].astype(np.uint8)
             
-            cam = gc.grad_cam(y_c, A_k, grads, ldrs)
+            # ldrs = tf.py_function(_tone_mapping, [hdrs], [tf.float32])[0]
+                
+            # # TODO test
+            # ldrs = (ldrs + 1.)*127.5
+            # ldrs = ldrs.numpy()
+            # ldrs = ldrs[:,:,:,::-1].astype(np.uint8)
+            
+            # cam = gc.grad_cam(y_c, A_k, grads, ldrs)
             # cv2.imwrite("gradcam.jpg", cam)
-            gradcam_show(cam, train_gradcam, epoch)
+            # gradcam_show(cam, train_gradcam, epoch)
 
             with train_summary_writer_ldr2hdr.as_default():
                 tf.summary.scalar('loss', train_loss_ldr2hdr.result(), step=epoch+1)
             
             for step, (hdrs, rndrs, poses) in enumerate(tqdm(ldr2hdr_test_ds)):
                 
-                ldrs = tf.py_function(_tone_mapping, [hdrs], [tf.float32])[0]
                 
                 pseudoHDR, A_k, y_c, grads = test_step(hdrs)
-                
-            # TODO test
-            ldrs = (ldrs + 1.)*127.5
-            ldrs = ldrs.numpy()
-            ldrs = ldrs[:,:,:,::-1].astype(np.uint8)
-            camt = gc.grad_cam(y_c, A_k, grads, ldrs)
+            
+            # ldrs = tf.py_function(_tone_mapping, [hdrs], [tf.float32])[0]
+                   
+            # # TODO test
+            # ldrs = (ldrs + 1.)*127.5
+            # ldrs = ldrs.numpy()
+            # ldrs = ldrs[:,:,:,::-1].astype(np.uint8)
+            # camt = gc.grad_cam(y_c, A_k, grads, ldrs)
             # cv2.imwrite("gradcam.jpg", cam)
-            gradcam_show(camt, test_gradcam, epoch)
+            # gradcam_show(camt, test_gradcam, epoch)
 
             with test_summary_writer_ldr2hdr.as_default():
                 tf.summary.scalar('loss', test_loss_ldr2hdr.result(), step=epoch+1)

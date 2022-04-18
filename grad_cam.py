@@ -127,13 +127,17 @@ def grad_cam(y_c, A_k, grads, image):
     # Linear Combination
     # for each batch, it has a weight value of 16
 
+    batch_size = output.shape[0]
     new_cam = []
-    for j, batch in enumerate(weights): 
-        # print("\n###############\nbatch\n###############\n",np.shape(batch))
-        for i, w in enumerate(batch):
-            cam[j, :, :] += w * output[j, :, :, i]
 
-        new_cam.append( cv2.resize(cam[j], (128, 32)) )
+    # grad : 32 feature map  16 feature map num
+    for k in range(batch_size):
+        for j, batch in enumerate(weights): 
+            # print("\n###############\nbatch\n###############\n",np.shape(batch))
+            for i, w in enumerate(batch):
+                cam[k, :, :] += w * output[k, :, :, i]
+
+            new_cam.append( cv2.resize(cam[j], (128, 32)) )
 
     # 계산된 weighted combination 에 ReLU 적용
     new_cam = np.maximum(new_cam, 0)

@@ -211,10 +211,7 @@ def run(src, kernel_size="kernel_size", strides="strides", dilation_rate="dilati
     # add offset
     y = tf.add_n([y, y_off])
     x = tf.add_n([x, x_off])
-    
     y = tf.clip_by_value(y, 0, in_h - 1)
-    # y= tf.where( y < 0 , 0, y)
-    # y= tf.where( y > in_h - 1 , in_h - 1, y)    
     
     # consider 360 degree
     x= tf.where( x < 0 , tf.add(x, in_w), x)
@@ -226,6 +223,8 @@ def run(src, kernel_size="kernel_size", strides="strides", dilation_rate="dilati
     # TODO DEBUG
     res = tf.stack((y,x), axis=-1)
     return res , img
+
+    ######### below script code does not need in this test section. 
 
     # get four coordinates of points around (x, y)
     y0, x0 = [tf.cast(tf.floor(i), dtype=tf.int32) for i in [y, x]]
@@ -296,7 +295,15 @@ def debug(newimg, offset, gridoffset = False):
             
 if __name__=="__main__":
     
-    image = cv2.imread("skydome.jpg")
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="test a distortion aware conv filter")
+    parser.add_argument('--img', type=str, default="skydome.jpg")
+    parser.add_argument('--skydome', type=bool, default=True)
+
+    args = parser.parse_args()
+    
+    image = cv2.imread(args.img)
     
     h,w,_ = image.shape
     
@@ -308,6 +315,6 @@ if __name__=="__main__":
     
     image = tf.convert_to_tensor(image)
     image = tf.expand_dims(image, axis=0)
-    pixels, newimg = run(image, kernel_size, strides, dilation_rate, skydome = True)
+    pixels, newimg = run(image, kernel_size, strides, dilation_rate, skydome = args.skydome)
     
     debug(newimg[0].numpy(), pixels[0].numpy())

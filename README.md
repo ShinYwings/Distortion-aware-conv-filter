@@ -4,13 +4,14 @@
 >
 # Note
 
-Implemented distortion-aware convolutional filters in the simple classification model.
+Implemented distortion-aware convolutional filters in the simple classification model using tensorflow2.
 
 The implemented code referenced [deformable convolutional layer](https://github.com/DHZS/tf-deformable-conv-layer/blob/master/nets/deformable_conv_layer.py).
 
 <img src="figure1.png" width="80%" height="80%">
 
-</br>
+# Requirements
+- tensorflow >= 2
 
 # Usage
 

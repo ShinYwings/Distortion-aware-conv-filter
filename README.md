@@ -1,15 +1,20 @@
 # Distortion-Aware Convolutional Filters for Dense Prediction in Panoramic Images (ECCV 2018)\[[Paper](https://www.ecva.net/papers/eccv_2018/papers_ECCV/papers/Keisuke_Tateno_Distortion-Aware_Convolutional_Filters_ECCV_2018_paper.pdf)\]
-
+>
+> Currently this code only supports `stride argument 1`. It will be updated.
+>
 # Note
 
 Implemented distortion-aware convolutional filters in the simple classification model.
-> Currently, stride argument can apply only "1"
+
+The implemented code referenced [deformable convolutional layer](https://github.com/DHZS/tf-deformable-conv-layer/blob/master/nets/deformable_conv_layer.py).
 
 <img src="figure1.png" width="80%" height="80%">
 
 </br>
 
 # Usage
+
+It supports `conv2d` and `deconv2d` for downsampling and upsampling, respectively.
 
 ```python
 import distortion_aware_ops as distortion
@@ -23,6 +28,13 @@ import distortion_aware_ops as distortion
 # Filter Design
 
 A 3D point mapped onto a 2D grid along an arrow from the "tangent plane of the unit sphere".
+
+The implemented code can be checked from
+
+```python
+def distortion() # in distortion_aware_ops.py
+```
+
 <img src="distortion.png" width="80%" height="80%">
 
 # Convolution Operation Design
@@ -52,3 +64,9 @@ A 3D point mapped onto a 2D grid along an arrow from the "tangent plane of the u
     ```
 
     ![skyout](skydome_output.jpg)
+
+# Train and Validation
+
+```
+python main.py
+```

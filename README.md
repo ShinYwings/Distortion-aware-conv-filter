@@ -1,16 +1,17 @@
 # Distortion-Aware Convolutional Filters for Dense Prediction in Panoramic Images (ECCV 2018)\[[Paper](https://www.ecva.net/papers/eccv_2018/papers_ECCV/papers/Keisuke_Tateno_Distortion-Aware_Convolutional_Filters_ECCV_2018_paper.pdf)\]
 >
-> Currently this code only supports `stride argument 1`. It will be updated.
+> Currently this code only supports `stride==1`. It will be updated.
 >
-# Note
+<img src="figure1.png" width="80%" height="80%">
 
 Implemented distortion-aware convolutional filters in the simple classification model using tensorflow2.
 
+# Note
+
 The implemented code referenced [deformable convolutional layer](https://github.com/DHZS/tf-deformable-conv-layer/blob/master/nets/deformable_conv_layer.py).
 
-<img src="figure1.png" width="80%" height="80%">
-
 # Requirements
+
 - tensorflow >= 2
 
 # Usage

@@ -2,7 +2,18 @@ import numpy as np
 import cv2
 from matplotlib import pyplot as plt
 import tensorflow as tf
+import argparse
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+    
 def _pad_input(inputs, kernel_size=3, strides=1, dilation_rate=1):
     """Check if input feature map needs padding, because we don't use the standard Conv() function.
 
@@ -299,7 +310,7 @@ if __name__=="__main__":
     
     parser = argparse.ArgumentParser(description="test a distortion aware conv filter")
     parser.add_argument('--img', type=str, default="skydome.jpg")
-    parser.add_argument('--skydome', type=bool, default=True)
+    parser.add_argument('--skydome', type=str, default="True")
 
     args = parser.parse_args()
     
@@ -315,6 +326,6 @@ if __name__=="__main__":
     
     image = tf.convert_to_tensor(image)
     image = tf.expand_dims(image, axis=0)
-    pixels, newimg = run(image, kernel_size, strides, dilation_rate, skydome = args.skydome)
+    pixels, newimg = run(image, kernel_size, strides, dilation_rate, skydome = str2bool(args.skydome))
     
     debug(newimg[0].numpy(), pixels[0].numpy())

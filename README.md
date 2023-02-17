@@ -12,7 +12,7 @@ The implemented code referenced [deformable convolutional layer](https://github.
 
 # Requirements
 
-- tensorflow >= 2
+- tensorflow >= 2.*
 
 # Usage
 
@@ -54,7 +54,7 @@ def distortion() # in distortion_aware_ops.py
 - Case 1 : Panoramic image (-90 to 90 degrees for elevation)
 
     ```
-    python filter_movement_test.py --img=pano_input.jpg --skydome=False
+    python filter_movement_test.py --img pano_input.jpg --skydome False
     ```
 
     ![panoout](pano_output.jpg)
@@ -62,7 +62,7 @@ def distortion() # in distortion_aware_ops.py
 - Case 2 : Skydome image (0 to 90 degrees for elevation)
 
     ```
-    python filter_movement_test.py --img=skydome_input.jpg --skydome=True
+    python filter_movement_test.py --img skydome_input.jpg --skydome True
     ```
 
     ![skyout](skydome_output.jpg)
